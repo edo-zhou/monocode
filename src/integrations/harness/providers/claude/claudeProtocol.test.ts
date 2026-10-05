@@ -567,6 +567,46 @@ describe("list_models catalog", () => {
     ).toBe("1m");
   });
 
+  it.each([
+    ["@hqex-react-kai/gpt-6.1-sol", "@hqex-react-kai/gpt-6.1-sol"],
+    ["@hqex-react-kai/claude-opus-4-8", "claude-opus-4-8"],
+    ["gateway/custom-v2", "claude-sonnet-5"],
+  ])(
+    "preserves local model route %s through CLI launch",
+    (value, resolvedModel) => {
+      const models = modelsFromClaudeListModels([
+        { value, resolvedModel, displayName: value },
+        { value, resolvedModel, displayName: value },
+      ]);
+      expect(models).toHaveLength(1);
+      expect(models[0]).toMatchObject({
+        id: `claude:${value}`,
+        nativeId: value,
+        provider: { id: "claude-local", name: "Local models" },
+      });
+      const args = buildClaudeSpawnArgs({
+        model: resolveClaudeApiModelId(models[0].nativeId!),
+      });
+      expect(args[args.indexOf("--model") + 1]).toBe(value);
+    },
+  );
+
+  it.each([
+    ["opus", "claude-opus-5-5", "opus"],
+    ["sonnet", "claude-sonnet-5", "sonnet"],
+    ["haiku", "claude-haiku-4-5", "haiku"],
+    ["fable", "claude-fable-5", "fable"],
+    ["opus-5-5", "", "claude-opus-5-5"],
+    ["claude-sonnet-4-6", "claude-sonnet-4-6", "claude-sonnet-4-6"],
+  ])(
+    "keeps existing Claude model handling for %s",
+    (value, resolvedModel, expected) => {
+      const [model] = modelsFromClaudeListModels([{ value, resolvedModel }]);
+      expect(model.nativeId).toBe(expected);
+      expect(model.provider).toBeUndefined();
+    },
+  );
+
   it("launches a versioned short value with the claude- prefix", () => {
     const models = modelsFromClaudeListModels([
       {

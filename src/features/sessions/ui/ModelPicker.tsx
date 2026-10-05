@@ -235,7 +235,10 @@ function recentMenuModels(
 }
 
 function modelGroups(tab: ModelPickerTab, models: AgentModel[]): ModelGroup[] {
-  if (tab !== "opencode") {
+  const hasLocalClaudeModels =
+    tab === "claude" &&
+    models.some((model) => model.provider?.id === "claude-local");
+  if (tab !== "opencode" && !hasLocalClaudeModels) {
     return [
       {
         id: "models",
@@ -246,7 +249,11 @@ function modelGroups(tab: ModelPickerTab, models: AgentModel[]): ModelGroup[] {
 
   const groups = new Map<string, ModelGroup>();
   models.forEach((item, index) => {
-    const provider = item.provider ?? { id: "opencode", name: "OpenCode" };
+    const provider =
+      item.provider ??
+      (tab === "claude"
+        ? { id: "claude", name: "Claude Code" }
+        : { id: "opencode", name: "OpenCode" });
     let group = groups.get(provider.id);
     if (!group) {
       group = { id: provider.id, name: provider.name, models: [] };

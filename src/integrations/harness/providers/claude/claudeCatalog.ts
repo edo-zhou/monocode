@@ -388,6 +388,9 @@ function modelFromListRow(raw: unknown): AgentModel | null {
     harness: "claude",
     name,
     nativeId,
+    ...(isNamespacedClaudeModel(nativeId)
+      ? { provider: { id: "claude-local", name: "Local models" } }
+      : {}),
     ...(settings.length > 0 ? { settings } : {}),
   };
 }
@@ -537,8 +540,15 @@ function claudeCatalogId(nativeId: string): string {
 function claudeLaunchId(valueId: string, resolvedId: string): string {
   const nativeId = valueId || resolvedId;
   if (!nativeId) return "";
+  // Gateway IDs are opaque routes, not abbreviated Claude version names.
+  // Keep the catalog's selected route even if it resolves to a Claude model.
+  if (isNamespacedClaudeModel(nativeId)) return nativeId;
   if (nativeId.startsWith("claude-") || !/\d/.test(nativeId)) return nativeId;
   return resolvedId.startsWith("claude-") ? resolvedId : `claude-${nativeId}`;
+}
+
+function isNamespacedClaudeModel(model: string): boolean {
+  return /^[^\s/]+\/\S+$/.test(model);
 }
 
 export function modelsForClaudeVersion(

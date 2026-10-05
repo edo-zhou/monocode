@@ -110,6 +110,7 @@ pub struct GitlabMrFile {
 pub struct GitlabMrDiff {
     pub additions: i64,
     pub deletions: i64,
+    pub counts_complete: bool,
     pub files: Vec<GitlabMrFile>,
     pub patch: String,
     pub truncated: bool,
@@ -592,7 +593,11 @@ fn gitlab_mr_diff_for(
             parse_mr_diff(&response.value, response.has_next_page)
         }
     }?;
-    let stats = gitlab_mr_diff_stats_for(config, repo, number)?;
+    let Ok(stats) = gitlab_mr_diff_stats_for(config, repo, number) else {
+        // REST still provides a useful preview when GraphQL is unavailable.
+        // Its file list and counts are partial, and it has no refs for lazy loading.
+        return Ok(diff);
+    };
     // REST patches may omit files or their contents even when overflow is false.
     // Keep their preview limits, but use GitLab's complete metadata for all counts.
     let preview_counts: HashMap<_, _> = diff
@@ -605,6 +610,7 @@ fn gitlab_mr_diff_for(
     });
     diff.additions = stats.diff_stats_summary.additions;
     diff.deletions = stats.diff_stats_summary.deletions;
+    diff.counts_complete = true;
     diff.files = stats.diff_stats;
     diff.diff_refs = stats.diff_refs;
     Ok(diff)
@@ -904,6 +910,7 @@ fn parse_mr_diff(value: &Value, has_next_page: bool) -> Result<GitlabMrDiff, Str
     Ok(GitlabMrDiff {
         additions: total_additions,
         deletions: total_deletions,
+        counts_complete: false,
         files,
         patch,
         truncated,
@@ -1650,6 +1657,8 @@ mod tests {
         assert_eq!((diff.additions, diff.deletions), (101, 51));
         assert!(diff.patch.contains("rename from src/old.ts"));
         assert!(diff.truncated);
+        assert_eq!(serde_json::to_value(&diff).unwrap()["countsComplete"], true);
+        assert!(diff.diff_refs.is_some());
         assert_eq!(requests, [
             "GET /gitlab/api/v4/projects/acme%2Fplatform%2Fweb/merge_requests/9/diffs?per_page=100 HTTP/1.1",
             "GET /gitlab/api/v4/projects/acme%2Fplatform%2Fweb/merge_requests/9/changes?access_raw_diffs=true HTTP/1.1",
@@ -1695,21 +1704,45 @@ mod tests {
     }
 
     #[test]
-    fn mr_diff_rejects_unavailable_or_incomplete_statistics() {
+    fn mr_diff_preserves_preview_when_statistics_are_unavailable_or_incomplete() {
         let mut incomplete = mr_stats_response(json!([]), 0, 0);
         incomplete["data"]["project"]["mergeRequest"]["diffStatsSummary"]["fileCount"] = json!(2);
-        for stats in [
-            json!({"errors": [{"message": "Statistics unavailable"}]}),
-            json!({"data": {"project": null}}),
-            incomplete,
+        for (status, stats) in [
+            (
+                200,
+                json!({"errors": [{"message": "Statistics unavailable"}]}),
+            ),
+            (200, json!({"data": {"project": null}})),
+            (200, incomplete),
+            (403, json!({"message": "Forbidden"})),
+            (500, json!({"message": "Upstream error"})),
         ] {
-            let (config, server) = serve_gitlab(vec![(200, mr_diff_rows()), (200, stats)]);
-            let error = gitlab_mr_diff_for(&config, "acme/web", 9).unwrap_err();
-            assert_eq!(
-                error,
-                "GitLab did not return complete merge request diff statistics"
-            );
-            assert_eq!(server.join().unwrap().len(), 2);
+            for legacy in [false, true] {
+                let mut responses = if legacy {
+                    vec![
+                        (404, json!({"message": "Not Found"})),
+                        (200, json!({"changes": mr_diff_rows(), "overflow": true})),
+                    ]
+                } else {
+                    vec![(200, mr_diff_rows())]
+                };
+                responses.push((status, stats.clone()));
+                let (config, server) = serve_gitlab(responses);
+                let result = gitlab_mr_diff_for(&config, "acme/web", 9);
+                assert_eq!(server.join().unwrap().len(), if legacy { 3 } else { 2 });
+                let diff = result.expect("statistics failure must not discard the REST preview");
+                let preview = parse_mr_diff(&mr_diff_rows(), legacy).unwrap();
+                assert_eq!(diff.patch, preview.patch);
+                assert_eq!(diff.files, preview.files);
+                assert_eq!(diff.file_changes, preview.file_changes);
+                assert_eq!((diff.additions, diff.deletions), (1, 1));
+                assert_eq!(diff.truncated, legacy);
+                assert_eq!(
+                    serde_json::to_value(&diff).unwrap()["countsComplete"],
+                    false
+                );
+                assert!(diff.diff_refs.is_none());
+            }
         }
     }
 

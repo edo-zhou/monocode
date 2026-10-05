@@ -137,16 +137,30 @@ export function InboxPrDiff({
   );
 
   return (
-    <UnifiedDiffView
-      files={files}
-      truncated={diff.truncated}
-      totals={{ additions: diff.additions, deletions: diff.deletions }}
-      fill={false}
-      fileLayout="cards"
-      initialExpansion="first"
-      focusPath={focusPath}
-      onLoadFile={loadFile ? onLoadFile : undefined}
-    />
+    <>
+      {diff.countsComplete === false ? (
+        <p className="px-3 py-3 text-[12px] text-content/45">
+          Showing available preview only. File list and line counts may be
+          incomplete.
+        </p>
+      ) : null}
+      {diff.countsComplete === false && diff.files.length === 0 ? (
+        <p className="px-4 py-6 text-[13px] text-content/45">
+          No file preview available
+        </p>
+      ) : (
+        <UnifiedDiffView
+          files={files}
+          truncated={diff.truncated}
+          totals={{ additions: diff.additions, deletions: diff.deletions }}
+          fill={false}
+          fileLayout="cards"
+          initialExpansion="first"
+          focusPath={focusPath}
+          onLoadFile={loadFile ? onLoadFile : undefined}
+        />
+      )}
+    </>
   );
 }
 

@@ -142,6 +142,8 @@ export type GithubPrFile = {
 export type GithubPrDiff = {
   additions: number;
   deletions: number;
+  /** False when the file list, per-file counts and totals only cover a preview. */
+  countsComplete?: boolean;
   files: GithubPrFile[];
   patch: string;
   truncated: boolean;

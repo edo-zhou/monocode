@@ -59,6 +59,7 @@ export type GitlabWorkItemThread = {
 export type GitlabMrDiff = {
   additions: number;
   deletions: number;
+  countsComplete: boolean;
   files: { path: string; additions: number; deletions: number }[];
   patch: string;
   truncated: boolean;

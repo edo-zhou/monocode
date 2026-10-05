@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { InboxPrDiff } from "./InboxPrDiff";
+import { InboxPrChangesGlance } from "./InboxPrOverview";
 import { highlightDiffFile } from "../../files/editor/syntaxTokens";
 
 vi.mock("../../files/editor/syntaxTokens", () => ({
@@ -109,7 +110,35 @@ it("keeps the existing preview behavior when no file loader is provided", async 
   );
   expect(container.textContent).not.toContain("Loading diff");
   expect(container.textContent).toContain("2 files");
+  expect(container.textContent).not.toContain("counts may be incomplete");
 });
+
+it.each([diff, { ...diff, files: [], patch: "" }])(
+  "marks preview counts as incomplete in the Code tab and summary",
+  async (preview) => {
+    const partial = { ...preview, countsComplete: false };
+    for (const view of [
+      createElement(InboxPrDiff, { diff: partial }),
+      createElement(InboxPrChangesGlance, {
+        diff: partial,
+        loading: false,
+        error: null,
+        onOpenFile: vi.fn(),
+      }),
+    ]) {
+      await act(async () => root.render(view));
+      expect(container.textContent).toContain(
+        "File list and line counts may be incomplete",
+      );
+      expect(container.textContent).not.toContain("No file changes");
+      if (preview.files.length === 0) {
+        expect(container.textContent).toContain("No file preview available");
+      } else {
+        expect(container.textContent).toContain("README.md");
+      }
+    }
+  },
+);
 
 it("ignores an older preview's response that finishes after the current file", async () => {
   let resolveOld!: (value: ReturnType<typeof contents>) => void;

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -95,7 +96,7 @@ pub struct GitlabWorkItemThread {
     pub head_ref_name: String,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitlabMrFile {
     pub path: String,
@@ -111,6 +112,21 @@ pub struct GitlabMrDiff {
     pub files: Vec<GitlabMrFile>,
     pub patch: String,
     pub truncated: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitlabMrDiffStats {
+    diff_stats: Vec<GitlabMrFile>,
+    diff_stats_summary: GitlabMrDiffStatsSummary,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitlabMrDiffStatsSummary {
+    additions: i64,
+    deletions: i64,
+    file_count: usize,
 }
 
 #[tauri::command(async)]
@@ -380,11 +396,14 @@ fn gitlab_mr_diff_for(
         "/projects/{}/merge_requests/{number}/diffs?per_page=100",
         encode_path_component(repo)
     );
-    match gitlab_get_request(config, &path).call() {
+    let mut diff = match gitlab_get_request(config, &path).call() {
         // Older self-hosted GitLab versions expose /changes but not /diffs.
         // Match the HTTP status so permission and transport errors still surface.
         Err(ureq::Error::Status(404, _)) => {
-            let path = format!("{}/changes", item_path(repo, "pr", number));
+            let path = format!(
+                "{}/changes?access_raw_diffs=true",
+                item_path(repo, "pr", number)
+            );
             let response = gitlab_get(config, &path)?;
             let changes = response
                 .value
@@ -401,7 +420,73 @@ fn gitlab_mr_diff_for(
             let response = read_gitlab_response(result)?;
             parse_mr_diff(&response.value, response.has_next_page)
         }
+    }?;
+    let stats = gitlab_mr_diff_stats_for(config, repo, number)?;
+    // REST patches may omit files or their contents even when overflow is false.
+    // Keep their preview limits, but use GitLab's complete metadata for all counts.
+    let preview_counts: HashMap<_, _> = diff
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), (file.additions, file.deletions)))
+        .collect();
+    diff.truncated |= stats.diff_stats.iter().any(|file| {
+        preview_counts.get(file.path.as_str()) != Some(&(file.additions, file.deletions))
+    });
+    diff.additions = stats.diff_stats_summary.additions;
+    diff.deletions = stats.diff_stats_summary.deletions;
+    diff.files = stats.diff_stats;
+    Ok(diff)
+}
+
+fn gitlab_mr_diff_stats_for(
+    config: &GitlabConfig,
+    repo: &str,
+    number: i64,
+) -> Result<GitlabMrDiffStats, String> {
+    let body = serde_json::json!({
+        "query": "query($project: ID!, $iid: String!) { project(fullPath: $project) { mergeRequest(iid: $iid) { diffStats { path additions deletions } diffStatsSummary { additions deletions fileCount } } } }",
+        "variables": { "project": repo, "iid": number.to_string() }
+    });
+    let response = read_gitlab_response(
+        gitlab_agent()
+            .post(&format!("{}/api/graphql", config.url.trim_end_matches('/')))
+            .set("PRIVATE-TOKEN", &config.token)
+            .set("Content-Type", "application/json")
+            .set("Accept", "application/json")
+            .set("User-Agent", USER_AGENT)
+            .send_string(&body.to_string()),
+    )?;
+    parse_mr_diff_stats(&response.value)
+}
+
+fn parse_mr_diff_stats(value: &Value) -> Result<GitlabMrDiffStats, String> {
+    let error = || "GitLab did not return complete merge request diff statistics".to_string();
+    if value
+        .get("errors")
+        .and_then(Value::as_array)
+        .is_some_and(|errors| !errors.is_empty())
+    {
+        return Err(error());
     }
+    let stats: GitlabMrDiffStats = serde_json::from_value(
+        value
+            .pointer("/data/project/mergeRequest")
+            .ok_or_else(error)?
+            .clone(),
+    )
+    .map_err(|_| error())?;
+    let files = &stats.diff_stats;
+    let totals = &stats.diff_stats_summary;
+    if files.len() != totals.file_count
+        || files
+            .iter()
+            .any(|file| file.path.trim().is_empty() || file.additions < 0 || file.deletions < 0)
+        || files.iter().map(|file| file.additions).sum::<i64>() != totals.additions
+        || files.iter().map(|file| file.deletions).sum::<i64>() != totals.deletions
+    {
+        return Err(error());
+    }
+    Ok(stats)
 }
 
 fn validate_kind(kind: &str) -> Result<(), String> {
@@ -1144,7 +1229,7 @@ fn expand_home(input: &str) -> PathBuf {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::thread;
     use std::time::Instant;
@@ -1182,12 +1267,19 @@ mod tests {
                 let mut request = String::new();
                 reader.read_line(&mut request).unwrap();
                 requests.push(request.trim().to_string());
+                let mut content_length = 0;
                 loop {
                     let mut header = String::new();
                     if reader.read_line(&mut header).unwrap() == 0 || header == "\r\n" {
                         break;
                     }
+                    if let Some((name, value)) = header.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap();
+                        }
+                    }
                 }
+                reader.read_exact(&mut vec![0; content_length]).unwrap();
                 let body = body.to_string();
                 write!(
                     stream,
@@ -1210,33 +1302,72 @@ mod tests {
         }])
     }
 
+    fn mr_stats_response(files: Value, additions: i64, deletions: i64) -> Value {
+        json!({"data": {"project": {"mergeRequest": {
+            "diffStatsSummary": {
+                "additions": additions, "deletions": deletions,
+                "fileCount": files.as_array().unwrap().len()
+            },
+            "diffStats": files
+        }}}})
+    }
+
     #[test]
     fn mr_diff_falls_back_to_changes_on_older_gitlab() {
+        let mut rows = mr_diff_rows();
+        rows.as_array_mut().unwrap().push(json!({
+            "old_path": "lock.yaml", "new_path": "lock.yaml", "diff": ""
+        }));
         let (config, server) = serve_gitlab(vec![
             (404, json!({"error": "404 Not Found"})),
-            (200, json!({"changes": mr_diff_rows(), "overflow": true})),
+            (200, json!({"changes": rows, "overflow": false})),
+            (
+                200,
+                mr_stats_response(
+                    json!([
+                        {"path": "src/new.ts", "additions": 1, "deletions": 1},
+                        {"path": "lock.yaml", "additions": 100, "deletions": 50}
+                    ]),
+                    101,
+                    51,
+                ),
+            ),
         ]);
         let result = gitlab_mr_diff_for(&config, "acme/platform/web", 9);
         let requests = server.join().unwrap();
         let diff = result.expect("Code tab should load diffs from older GitLab instances");
-        assert_eq!(diff.files.len(), 1);
+        assert_eq!(diff.files.len(), 2);
         assert_eq!(diff.files[0].path, "src/new.ts");
-        assert_eq!((diff.additions, diff.deletions), (1, 1));
+        assert_eq!(diff.files[1].additions, 100);
+        assert_eq!((diff.additions, diff.deletions), (101, 51));
         assert!(diff.patch.contains("rename from src/old.ts"));
         assert!(diff.truncated);
         assert_eq!(requests, [
             "GET /gitlab/api/v4/projects/acme%2Fplatform%2Fweb/merge_requests/9/diffs?per_page=100 HTTP/1.1",
-            "GET /gitlab/api/v4/projects/acme%2Fplatform%2Fweb/merge_requests/9/changes HTTP/1.1",
+            "GET /gitlab/api/v4/projects/acme%2Fplatform%2Fweb/merge_requests/9/changes?access_raw_diffs=true HTTP/1.1",
+            "POST /gitlab/api/graphql HTTP/1.1",
         ]);
     }
 
     #[test]
     fn mr_diff_prefers_modern_endpoint() {
-        let (config, server) = serve_gitlab(vec![(200, mr_diff_rows())]);
+        let (config, server) = serve_gitlab(vec![
+            (200, mr_diff_rows()),
+            (
+                200,
+                mr_stats_response(
+                    json!([
+                        {"path": "src/new.ts", "additions": 1, "deletions": 1}
+                    ]),
+                    1,
+                    1,
+                ),
+            ),
+        ]);
         let diff = gitlab_mr_diff_for(&config, "acme/web", 9).unwrap();
         assert_eq!(diff.files.len(), 1);
         assert!(!diff.truncated);
-        assert_eq!(server.join().unwrap().len(), 1);
+        assert_eq!(server.join().unwrap().len(), 2);
     }
 
     #[test]
@@ -1252,6 +1383,25 @@ mod tests {
             };
             assert_eq!(error, expected);
             assert_eq!(server.join().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn mr_diff_rejects_unavailable_or_incomplete_statistics() {
+        let mut incomplete = mr_stats_response(json!([]), 0, 0);
+        incomplete["data"]["project"]["mergeRequest"]["diffStatsSummary"]["fileCount"] = json!(2);
+        for stats in [
+            json!({"errors": [{"message": "Statistics unavailable"}]}),
+            json!({"data": {"project": null}}),
+            incomplete,
+        ] {
+            let (config, server) = serve_gitlab(vec![(200, mr_diff_rows()), (200, stats)]);
+            let error = gitlab_mr_diff_for(&config, "acme/web", 9).unwrap_err();
+            assert_eq!(
+                error,
+                "GitLab did not return complete merge request diff statistics"
+            );
+            assert_eq!(server.join().unwrap().len(), 2);
         }
     }
 

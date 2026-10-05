@@ -1218,6 +1218,22 @@ function mapFileChangeItem(
   const paths = changes
     .map((change) => stringField(asRecord(change), "path"))
     .filter((path): path is string => Boolean(path));
+  const checkpointDiffs = Object.fromEntries(
+    changes.flatMap((change) => {
+      const row = asRecord(change);
+      const path = stringField(row, "path");
+      const diff = stringField(row, "diff");
+      const kind = asRecord(row?.kind);
+      const update =
+        row?.kind === "update" || stringField(kind, "type") === "update";
+      return path && update && !kind?.movePath && diff?.startsWith("@@ ")
+        ? [[path, diff]]
+        : [];
+    }),
+  );
+  const checkpoint = Object.keys(checkpointDiffs).length
+    ? { checkpointDiffs }
+    : {};
   const first = asRecord(changes[0]);
   const path = stringField(first, "path");
   const diff = stringField(first, "diff");
@@ -1238,6 +1254,7 @@ function mapFileChangeItem(
       kind: "edit",
       status,
       preview,
+      ...checkpoint,
       ...(paths.length ? { paths } : {}),
     };
   }
@@ -1248,6 +1265,7 @@ function mapFileChangeItem(
     kind: "edit",
     status,
     preview,
+    ...checkpoint,
     ...(paths.length ? { paths } : {}),
   };
 }

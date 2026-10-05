@@ -11535,10 +11535,17 @@ function trackSessionEdits(
     event.type === "tool.updated" &&
     (event.status === "completed" || event.status === "success");
   if (!completed) {
-    void prepareSessionCheckpoint(sessionId, cwd, paths).catch(() => undefined);
+    // Progress is not another edit boundary. Complete provider diffs also avoid
+    // racing an asynchronous snapshot against the provider's file write.
+    if (event.type !== "tool.started") return;
+    const patchedPaths = Object.keys(event.checkpointDiffs ?? {});
+    const snapshotPaths = paths.filter((path) => !patchedPaths.includes(path));
+    void prepareSessionCheckpoint(sessionId, cwd, snapshotPaths).catch(
+      () => undefined,
+    );
     return;
   }
-  void captureSessionCheckpoint(sessionId, cwd, paths)
+  void captureSessionCheckpoint(sessionId, cwd, paths, event.checkpointDiffs)
     .catch(() => undefined)
     .then(() => notifyReviewChanged(sessionId));
 }

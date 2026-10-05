@@ -62,6 +62,8 @@ export type HarnessEvent =
       preview?: ToolPreview;
       /** Every path affected when one structured edit changes multiple files. */
       paths?: string[];
+      /** Complete modification diffs, usable after the provider has written the file. */
+      checkpointDiffs?: Record<string, string>;
     }
   | {
       type: "tool.updated";
@@ -74,6 +76,7 @@ export type HarnessEvent =
       preview?: ToolPreview;
       /** Every path affected when one structured edit changes multiple files. */
       paths?: string[];
+      checkpointDiffs?: Record<string, string>;
     }
   /** Something a subagent did, mirrored onto its parent Agent tool call. */
   | {

@@ -1,4 +1,3 @@
-import { createSessionEditTracker } from "./model/sessionEdits";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
@@ -301,6 +300,7 @@ import {
 } from "../features/sessions/model/btw";
 
 import { isEditTool } from "../integrations/harness/core/preview";
+import { createSessionEditTracker } from "./model/sessionEdits";
 import {
   createEditedResendAttempt,
   createEditedResendCoordinator,

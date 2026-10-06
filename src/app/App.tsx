@@ -1,3 +1,4 @@
+import { createSessionEditTracker } from "./model/sessionEdits";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
@@ -307,12 +308,10 @@ import {
 import {
   beginSessionTurn,
   applySessionCheckpoint,
-  captureSessionCheckpoint,
   forgetSessionCheckpoint,
   flushSessionCheckpoint,
   keepSessionChanges,
   notifyReviewChanged,
-  prepareSessionCheckpoint,
   sessionCheckpointCleanupSafe,
 } from "../features/sessions/model/checkpoint";
 import { notifyDirsChanged } from "../features/files/model/fileTree";
@@ -6852,6 +6851,7 @@ function Workspace({
           return event;
         };
 
+        const trackSessionEdits = createSessionEditTracker(sessionId, workCwd);
         const pendingEditedEvents: HarnessEvent[] = [];
         const applyTurnEvent = (event: HarnessEvent) => {
           orchestrator.observe(sessionId, event);
@@ -6870,7 +6870,7 @@ function Workspace({
           }
           nudgeOpenEditors(event, workCwd);
           if (!orchestrator.forSession(sessionId))
-            trackSessionEdits(sessionId, workCwd, event);
+            trackSessionEdits(event);
           const routed = routePlanEvent(event);
           if (routed) enqueueHarnessEvent(sessionId, routed);
         };
@@ -11517,37 +11517,6 @@ function dropOpenFiles(
     });
   }
   return { ...tab, layout, focusedId, editorPanes };
-}
-
-function trackSessionEdits(
-  sessionId: string,
-  cwd: string,
-  event: HarnessEvent,
-) {
-  if (event.type !== "tool.started" && event.type !== "tool.updated") return;
-  if (!isEditTool(event.kind, event.title, event.preview)) return;
-  const paths = [
-    ...(event.paths ?? []),
-    ...(event.preview?.path ? [event.preview.path] : []),
-  ].filter((path, index, all) => all.indexOf(path) === index);
-  if (paths.length === 0 || cwd === "~") return;
-  const completed =
-    event.type === "tool.updated" &&
-    (event.status === "completed" || event.status === "success");
-  if (!completed) {
-    // Progress is not another edit boundary. Complete provider diffs also avoid
-    // racing an asynchronous snapshot against the provider's file write.
-    if (event.type !== "tool.started") return;
-    const patchedPaths = Object.keys(event.checkpointDiffs ?? {});
-    const snapshotPaths = paths.filter((path) => !patchedPaths.includes(path));
-    void prepareSessionCheckpoint(sessionId, cwd, snapshotPaths).catch(
-      () => undefined,
-    );
-    return;
-  }
-  void captureSessionCheckpoint(sessionId, cwd, paths, event.checkpointDiffs)
-    .catch(() => undefined)
-    .then(() => notifyReviewChanged(sessionId));
 }
 
 function nudgeWorkspace(cwd?: string) {

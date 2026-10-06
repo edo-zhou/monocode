@@ -1117,6 +1117,9 @@ fn reverse_snapshot_diff(dir: &Path, relative: &str, diff: &str) -> Option<Vec<u
         let output = command
             .current_dir(&scratch)
             .args([
+                // Snapshots must retain their exact bytes, including on Windows.
+                "-c",
+                "core.autocrlf=false",
                 "apply",
                 "--reverse",
                 "--unidiff-zero",
@@ -1852,6 +1855,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn completed_diff_ignores_user_autocrlf() {
+        let config_dir = tmp("autocrlf-config");
+        let config = config_dir.0.join("gitconfig");
+        std::fs::write(&config, "[core]\n\tautocrlf = true\n").unwrap();
+        // Use a child process so other parallel tests do not inherit this config.
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "checkpoint::tests::completed_diff_handles_late_events_without_hiding_foreign_edits",
+                "--nocapture",
+            ])
+            .env("GIT_CONFIG_GLOBAL", config)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     #[test]

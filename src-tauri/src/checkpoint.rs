@@ -1102,40 +1102,8 @@ fn reverse_snapshot_diff(dir: &Path, relative: &str, diff: &str) -> Option<Vec<u
     if !diff.starts_with("@@ ") || diff.len() as u64 > MAX_TEXT_FILE_BYTES {
         return None;
     }
-    let scratch = dir.join(format!("patch-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&scratch).ok()?;
-    let result = (|| {
-        let after = std::fs::read(state_blob_path(&dir.join("after"), relative).ok()?).ok()?;
-        std::fs::write(scratch.join("snapshot"), after).ok()?;
-        std::fs::write(
-            scratch.join("change.diff"),
-            format!("--- a/snapshot\n+++ b/snapshot\n{diff}"),
-        )
-        .ok()?;
-        let mut command = Command::new("git");
-        crate::hide_window_console(&mut command);
-        let output = command
-            .current_dir(&scratch)
-            .args([
-                // Snapshots must retain their exact bytes, including on Windows.
-                "-c",
-                "core.autocrlf=false",
-                "apply",
-                "--reverse",
-                "--unidiff-zero",
-                "--whitespace=nowarn",
-                "--include=snapshot",
-                "change.diff",
-            ])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        std::fs::read(scratch.join("snapshot")).ok()
-    })();
-    let _ = std::fs::remove_dir_all(scratch);
-    result
+    let after = std::fs::read(state_blob_path(&dir.join("after"), relative).ok()?).ok()?;
+    crate::checkpoint_diff::reverse_diff(&after, diff)
 }
 
 fn calculate_session_stats(dir: &Path, manifest: &Manifest, relative: &str) -> Option<ChangeStats> {
@@ -1900,6 +1868,32 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(repo.0.join("app.ts")).unwrap(),
             "external\n"
+        );
+    }
+
+    #[test]
+    fn shifted_completed_diff_disables_undo_without_changing_the_worktree() {
+        let repo = tmp("shifted-completed-diff");
+        assert!(init_git_commit(&repo.0, &[("app.ts", "old\nnew\n")]));
+        let cwd = repo.0.to_string_lossy().into_owned();
+        let (_root, store) = store();
+        store.ensure("s1", &cwd).unwrap();
+        // No prepare exists for diff-covered starts. The provider edited line
+        // one, then another edit replaced it. Git must not reverse the provider
+        // hunk against the unrelated matching text on line two.
+        let current = "external\nnew\n";
+        std::fs::write(repo.0.join("app.ts"), current).unwrap();
+        let diffs = BTreeMap::from([("app.ts".into(), "@@ -1 +1 @@\n-old\n+new\n".into())]);
+        store
+            .capture_with_diffs("s1", &cwd, &["app.ts".into()], &diffs)
+            .unwrap();
+        let file = store.status("s1", &cwd).unwrap().files.remove(0);
+        assert!(!file.exact);
+        assert!(!file.undoable);
+        assert!(store.undo("s1", &cwd, None).is_err());
+        assert_eq!(
+            std::fs::read_to_string(repo.0.join("app.ts")).unwrap(),
+            current
         );
     }
 

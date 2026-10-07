@@ -316,10 +316,14 @@ describe("GitChangesPanel folder actions", () => {
 
     expect(gitStageFile).toHaveBeenCalledExactlyOnceWith("/repo", "src/nested");
     expect(folder.getAttribute("aria-expanded")).toBe("true");
-    expect(invalidateWatchedFiles).toHaveBeenCalledWith([
+    const paths = [
       "/repo/src/nested/one.ts",
       "/repo/src/nested/deeper/two.ts",
-    ]);
+    ];
+    expect(invalidateWatchedFiles).toHaveBeenCalledExactlyOnceWith(paths);
+    await act(async () => vi.advanceTimersByTime(150));
+    expect(invalidateWatchedFiles).toHaveBeenCalledTimes(2);
+    expect(invalidateWatchedFiles).toHaveBeenLastCalledWith(paths);
   });
 
   it("unstages the staged folder including files that also have unstaged changes", async () => {

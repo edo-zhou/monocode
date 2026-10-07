@@ -171,10 +171,20 @@ export function InboxPrChangesGlance({
           </button>
         ) : null}
       </div>
+      {diff?.countsComplete === false ? (
+        <p className="text-[12px] text-content/45">
+          Showing available preview only. File list and line counts may be
+          incomplete.
+        </p>
+      ) : null}
       {error && !diff ? (
         <p className="text-[12px] text-content/45">{error}</p>
       ) : diff && files.length === 0 ? (
-        <p className="text-[12px] text-content/45">No file changes</p>
+        <p className="text-[12px] text-content/45">
+          {diff.countsComplete === false
+            ? "No file preview available"
+            : "No file changes"}
+        </p>
       ) : shown.length > 0 ? (
         <ul className="flex flex-col overflow-hidden rounded-lg border border-stroke">
           {shown.map((file) => {

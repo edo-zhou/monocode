@@ -256,6 +256,51 @@ describe("model picker", () => {
     );
   });
 
+  it("groups local Claude models without changing their selected route", () => {
+    const localId = "claude:@team/gpt-6.1-sol";
+    setHarnessModels("claude", [
+      { id: "claude:opus", harness: "claude", name: "Opus", nativeId: "opus" },
+      {
+        id: localId,
+        harness: "claude",
+        name: "@team/gpt-6.1-sol",
+        nativeId: "@team/gpt-6.1-sol",
+        provider: { id: "claude-local", name: "Local models" },
+      },
+    ]);
+    const onChange = vi.fn();
+    act(() =>
+      root.render(
+        createElement(ModelPicker, {
+          harness: "claude",
+          model: "claude:opus",
+          values: {},
+          onChange,
+          onSettingsChange: vi.fn(),
+        }),
+      ),
+    );
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')!
+        .click(),
+    );
+    const row = [
+      ...container.querySelectorAll<HTMLButtonElement>("button"),
+    ].find((button) => button.textContent?.startsWith("Model"))!;
+    hover(row);
+    expect(
+      [...container.querySelectorAll('[role="group"]')].map((group) =>
+        group.getAttribute("aria-label"),
+      ),
+    ).toEqual(["Claude Code", "Local models"]);
+    const local = [
+      ...container.querySelectorAll<HTMLElement>('[role="option"]'),
+    ].find((option) => option.textContent?.includes("@team/gpt-6.1-sol"))!;
+    act(() => local.click());
+    expect(onChange).toHaveBeenCalledWith("claude", localId);
+  });
+
   it("groups OpenCode models by provider and searches provider names", () => {
     setHarnessModels("opencode", [
       {

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
+import { Trash2 } from "../../../shared/ui/icons";
+import { RemoveLarkSourceDialog } from "./RemoveLarkSourceDialog";
 import { clearInboxCache } from "../../inbox/model/githubTasks";
 import {
   checkLarkConnection,
@@ -37,6 +39,11 @@ export function LarkSettings() {
   const [busy, setBusy] = useState("Loading connection…");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [removeTarget, setRemoveTarget] = useState<LarkSource | null>(null);
+  const removeTrigger = useRef<HTMLButtonElement | null>(null);
+  const sourceHeadings = useRef<
+    Partial<Record<LarkSource["kind"], HTMLHeadingElement | null>>
+  >({});
   const generation = useRef(0);
 
   useEffect(() => {
@@ -76,6 +83,28 @@ export function LarkSettings() {
   async function refreshSources() {
     clearInboxCache();
     setStatus(await larkConnected());
+  }
+
+  async function confirmRemoval(source: LarkSource) {
+    await removeLarkSource(source.id);
+    clearInboxCache();
+    setStatus((current) =>
+      current
+        ? {
+            ...current,
+            sources: current.sources.filter((entry) => entry.id !== source.id),
+          }
+        : current,
+    );
+    setCandidates((current) =>
+      current.filter((candidate) => candidate.source.id !== source.id),
+    );
+    setError("");
+    setNotice(
+      `Removed “${source.name}” from MonoCode. The original Lark content is unchanged.`,
+    );
+    setRemoveTarget(null);
+    requestAnimationFrame(() => sourceHeadings.current[source.kind]?.focus());
   }
 
   async function validate(text: string, editing?: LarkSource) {
@@ -522,7 +551,13 @@ export function LarkSettings() {
           ) : null}
           {(["base", "document"] as const).map((kind) => (
             <div key={kind} className="space-y-2">
-              <h3 className="font-medium text-content">
+              <h3
+                ref={(heading) => {
+                  sourceHeadings.current[kind] = heading;
+                }}
+                tabIndex={-1}
+                className="font-medium text-content outline-none"
+              >
                 {kind === "base" ? "Table sources" : "Documents"}{" "}
                 <span className="text-content/40">
                   (
@@ -533,6 +568,12 @@ export function LarkSettings() {
                   )
                 </span>
               </h3>
+              {status.sources.some((source) => source.kind === kind) ? (
+                <p className="text-[11px] leading-relaxed text-content/45">
+                  Disable to hide temporarily. Remove to stop showing this
+                  source in MonoCode only — no Lark content is deleted.
+                </p>
+              ) : null}
               {status.sources
                 .filter((source) => source.kind === kind)
                 .map((source) => (
@@ -555,13 +596,27 @@ export function LarkSettings() {
                         }}
                       />
                       <div className="min-w-0 flex-1">
-                        <p className="font-medium text-content/80">
+                        <p className="break-words font-medium text-content/80">
                           {source.name}
                         </p>
                         <p className="mt-1 break-all text-[11px] text-content/40">
                           {source.url}
                         </p>
                       </div>
+                      <SecondaryButton
+                        danger
+                        disabled={!!busy}
+                        aria-label={`Remove ${source.name}`}
+                        onClick={(event) => {
+                          removeTrigger.current = event.currentTarget;
+                          setError("");
+                          setNotice("");
+                          setRemoveTarget(source);
+                        }}
+                      >
+                        <Trash2 aria-hidden className="size-3" />
+                        Remove
+                      </SecondaryButton>
                     </div>
                     <div className="mt-2 flex gap-3">
                       <button
@@ -575,20 +630,6 @@ export function LarkSettings() {
                         }
                       >
                         Validate / edit
-                      </button>
-                      <button
-                        type="button"
-                        disabled={!!busy}
-                        aria-label={`Remove ${source.name}`}
-                        className="text-content/45 hover:text-red-400 disabled:opacity-40"
-                        onClick={() =>
-                          void run("Removing source…", async () => {
-                            await removeLarkSource(source.id);
-                            await refreshSources();
-                          })
-                        }
-                      >
-                        Remove source
                       </button>
                     </div>
                   </div>
@@ -624,6 +665,17 @@ export function LarkSettings() {
           {failure}
         </p>
       ))}
+      {removeTarget ? (
+        <RemoveLarkSourceDialog
+          key={removeTarget.id}
+          source={removeTarget}
+          onCancel={() => {
+            setRemoveTarget(null);
+            requestAnimationFrame(() => removeTrigger.current?.focus());
+          }}
+          onConfirm={() => confirmRemoval(removeTarget)}
+        />
+      ) : null}
     </div>
   );
 }

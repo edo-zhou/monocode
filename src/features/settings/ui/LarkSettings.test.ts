@@ -211,7 +211,7 @@ it("does not silently overwrite an already added table", async () => {
   expect(container.textContent).toContain("Already added");
 });
 
-it("disables and removes individual sources without disconnecting other sources", async () => {
+it("disables sources and confirms removal without disconnecting other sources", async () => {
   status.sources = [structuredClone(base), structuredClone(documentSource)];
   await render();
   await act(async () =>
@@ -226,7 +226,17 @@ it("disables and removes individual sources without disconnecting other sources"
       .querySelector<HTMLButtonElement>('[aria-label="Remove Bugs"]')!
       .click(),
   );
-  expect(status.sources.map((source) => source.id)).toEqual(["docA"]);
+  expect(container.querySelector('[aria-label="Enable Bugs"]')).toBeTruthy();
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).toContain("will not be deleted");
+  const confirm = [...dialog.querySelectorAll("button")].find(
+    (button) => button.textContent === "Remove source",
+  )!;
+  await act(async () => confirm.click());
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(container.querySelector('[aria-label="Enable Bugs"]')).toBeNull();
+  expect(container.querySelector('[aria-label="Enable PRD"]')).toBeTruthy();
+  expect(container.textContent).toContain("Removed “Bugs” from MonoCode");
 });
 
 it("does not claim verification succeeded when authentication fails", async () => {

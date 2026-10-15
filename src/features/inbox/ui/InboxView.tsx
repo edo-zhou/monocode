@@ -38,6 +38,11 @@ import {
 } from "react";
 import { InboxFiltersMenu, INBOX_FILTER_MENU_WIDTH } from "./InboxFiltersMenu";
 import { InboxConnectMenu } from "./InboxConnectMenu";
+import { InboxSourceTabs } from "./InboxSourceTabs";
+import {
+  loadInboxSourceOrder,
+  saveInboxSourceOrder,
+} from "../model/inboxSourceOrder";
 import { LarkItemDetail } from "./LarkItemDetail";
 import { LarkSourceSelector } from "./LarkSourceSelector";
 import { clearInboxCache } from "../model/githubTasks";
@@ -306,39 +311,6 @@ function peekInboxForRail(recents: RecentProject[], cwd: string) {
   });
 }
 
-function InboxSourceTab({
-  source,
-  selected,
-  onSelect,
-}: {
-  source: InboxSource;
-  selected: boolean;
-  onSelect: (source: InboxSource) => void;
-}) {
-  const label = INBOX_SOURCE_LABELS[source];
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={selected}
-      onClick={() => onSelect(source)}
-      className={`flex h-6 min-w-0 flex-1 items-center justify-center rounded-md px-2 text-[12px] leading-none ${
-        selected
-          ? "bg-selection text-content"
-          : "text-content/50 hover:bg-content/5 hover:text-content"
-      }`}
-    >
-      <span className="flex items-center gap-1.5">
-        <InboxProviderMark
-          provider={source}
-          className="block size-3.5 shrink-0"
-        />
-        <span className="leading-none">{label}</span>
-      </span>
-    </button>
-  );
-}
-
 function InboxDetailTab({
   label,
   count,
@@ -460,6 +432,7 @@ export function InboxView({
   const [targetItem, setTargetItem] = useState<InboxItem | null>(null);
   const [filters, setFilters] = useState(loadInboxFilters);
   const [connections, setConnections] = useState(loadInboxConnections);
+  const [sourceOrder, setSourceOrder] = useState(loadInboxSourceOrder);
   const [larkSources, setLarkSources] = useState<LarkSource[]>([]);
   const [larkKind, setLarkKind] = useState<LarkSourceKind>("base");
   const [larkSourceId, setLarkSourceId] = useState("");
@@ -547,6 +520,8 @@ export function InboxView({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (document.documentElement.classList.contains("is-reordering")) return;
+      if (document.querySelector("[data-image-zoom]")) return;
       event.preventDefault();
       event.stopPropagation();
       if (filterMenu) {
@@ -673,7 +648,10 @@ export function InboxView({
     saveInboxSource(next);
   }, [connections, source]);
 
-  const visibleSources = visibleInboxSources(connections);
+  const availableSources = visibleInboxSources(connections);
+  const visibleSources = sourceOrder.filter((option) =>
+    availableSources.includes(option),
+  );
   const connectableSources = connectableInboxSources(connections);
   const sourceAvailable = visibleSources.includes(source);
   const noSourcesConnected = visibleSources.length === 0;
@@ -944,6 +922,16 @@ export function InboxView({
     saveInboxSource(next);
   };
 
+  const onSourceReorder = (next: InboxSource[]) => {
+    const reordered = new Set(next);
+    let index = 0;
+    const merged = sourceOrder.map((option) =>
+      reordered.has(option) ? next[index++] : option,
+    );
+    setSourceOrder(merged);
+    saveInboxSourceOrder(merged);
+  };
+
   const onFilterButtonClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
     if (filterMenu) {
       setFilterMenu(null);
@@ -961,44 +949,39 @@ export function InboxView({
       ref={resize.setPaneRef}
       className="relative flex h-full min-h-0 shrink-0 flex-col border-r border-stroke"
     >
-      <div className="flex h-9 shrink-0 items-center gap-px border-b border-stroke px-2">
-        {visibleSources.length > 0 ? (
-          <div
-            role="tablist"
-            aria-label="Inbox source"
-            className="flex min-w-0 basis-0 items-center gap-px"
-            style={{ flexGrow: visibleSources.length }}
-          >
-            {visibleSources.map((option) => (
-              <InboxSourceTab
-                key={option}
-                source={option}
-                selected={source === option}
-                onSelect={onSourceChange}
-              />
-            ))}
-          </div>
-        ) : null}
-        {connectableSources.length > 0 ? (
-          <button
-            ref={connectButtonRef}
-            type="button"
-            aria-label="Connect an inbox source"
-            aria-haspopup="menu"
-            aria-expanded={connectMenuOpen}
-            title="Connect an inbox source"
-            onClick={() => setConnectMenuOpen((open) => !open)}
-            className={`flex h-6 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 text-[12px] leading-none ${
-              connectMenuOpen
-                ? "bg-selection text-content"
-                : "text-content/40 hover:bg-content/5 hover:text-content"
-            }`}
-          >
-            <Plus className="size-3.5 shrink-0" strokeWidth={1.75} />
-            <span className="min-w-0 truncate">Add connection</span>
-          </button>
-        ) : null}
-      </div>
+      <InboxSourceTabs
+        sources={visibleSources}
+        selected={source}
+        onSelect={onSourceChange}
+        onReorder={onSourceReorder}
+        trailing={
+          connectableSources.length > 0 ? (
+            <button
+              ref={connectButtonRef}
+              type="button"
+              aria-label="Connect an inbox source"
+              aria-haspopup="menu"
+              aria-expanded={connectMenuOpen}
+              title="Connect an inbox source"
+              onClick={() => setConnectMenuOpen((open) => !open)}
+              className={`flex h-6 shrink-0 items-center justify-center gap-1.5 rounded-md text-[12px] leading-none ${visibleSources.length ? "w-6" : "flex-1 px-2"} ${
+                connectMenuOpen
+                  ? "bg-selection text-content"
+                  : "text-content/40 hover:bg-content/5 hover:text-content"
+              }`}
+            >
+              <Plus className="size-3.5 shrink-0" strokeWidth={1.75} />
+              <span
+                className={
+                  visibleSources.length ? "sr-only" : "min-w-0 truncate"
+                }
+              >
+                Add connection
+              </span>
+            </button>
+          ) : null
+        }
+      />
       {source === "lark" ? (
         <LarkSourceSelector
           kind={larkKind}

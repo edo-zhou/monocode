@@ -436,6 +436,7 @@ pub fn run() {
             lark::lark_remove_source,
             lark::lark_inbox,
             lark::lark_item_details,
+            lark::lark_attachment_preview,
             link_preview::fetch_link_preview,
             fs::git_branches,
             fs::git_checkout,

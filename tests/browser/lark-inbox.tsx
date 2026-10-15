@@ -18,6 +18,103 @@ const mapping = {
   closedValues: ["Done"],
 };
 let backendAccessRevoked = false;
+let previewAttempts = 0;
+let removeAttempts = 0;
+const recordsFixture = new URLSearchParams(location.search).has("records");
+function recordFields(sourceId: unknown) {
+  return [
+    {
+      id: "attachments",
+      name: "Screenshots",
+      kind: 17,
+      value: [
+        {
+          file_token: "imageA",
+          name: "checkout.png",
+          type: "image/png",
+          size: 1024,
+        },
+        {
+          file_token: "fileA",
+          name: "debug.log",
+          type: "text/plain",
+          size: 2048,
+        },
+      ],
+    },
+    {
+      id: "description",
+      name: "Description",
+      kind: 1,
+      value: [{ text: `Reproduction steps for ${sourceId}` }],
+    },
+    {
+      id: "due",
+      name: "Due date",
+      kind: 5,
+      dateFormat: "yyyy/MM/dd",
+      value: 1792051200000,
+    },
+    { id: "created", name: "Created", kind: 1001, value: 1792051200000 },
+    {
+      id: "owner",
+      name: "Owner",
+      kind: 11,
+      value: [
+        { name: "Kai", id: "ou_one" },
+        { name: "Alex", id: "ou_two" },
+      ],
+    },
+    { id: "labels", name: "Labels", kind: 4, value: ["Regression", "UI"] },
+    { id: "verified", name: "Verified", kind: 7, value: false },
+    { id: "count", name: "Count", kind: 2, value: 0 },
+    { id: "empty", name: "Empty field", kind: 1, value: null },
+    {
+      id: "formula",
+      name: "Calculated date",
+      kind: 20,
+      value: { type: 5, value: [1792051200000] },
+    },
+    {
+      id: "link",
+      name: "Reference",
+      kind: 15,
+      value: { text: "Specification", link: "https://example.com/spec" },
+    },
+    {
+      id: "unsafe",
+      name: "Unsafe link",
+      kind: 15,
+      value: { text: "Untrusted reference", link: "javascript:alert(1)" },
+    },
+    { id: "invalid", name: "Invalid date", kind: 5, value: "not-a-date" },
+    {
+      id: "exact",
+      name: "Exact number",
+      kind: 2,
+      value: "9007199254740993123",
+    },
+    {
+      id: "otherfiles",
+      name: "Other files",
+      kind: 17,
+      value: [
+        {
+          file_token: "big",
+          name: "large.png",
+          type: "image/png",
+          size: 9 * 1024 * 1024,
+        },
+        {
+          file_token: "svg",
+          name: "diagram.svg",
+          type: "image/svg+xml",
+          size: 256,
+        },
+      ],
+    },
+  ].map((field) => ({ primary: false, options: [], ...field }));
+}
 function source(url: string): LarkSource {
   const document = url.includes("docx");
   const second = url.includes("BaseB");
@@ -35,6 +132,17 @@ function source(url: string): LarkSource {
   };
 }
 
+if (recordsFixture)
+  status.sources = [
+    source("https://team.larksuite.com/base/BaseA?table=TableA"),
+    ...(new URLSearchParams(location.search).has("all-sources")
+      ? [
+          source("https://team.larksuite.com/base/BaseB?table=TableA"),
+          source("https://team.larksuite.com/docx/DocA"),
+        ]
+      : []),
+  ];
+
 Object.assign(window, {
   __TAURI_INTERNALS__: {
     metadata: {
@@ -44,6 +152,22 @@ Object.assign(window, {
     transformCallback: () => 1,
     unregisterCallback: () => {},
     invoke: async (command: string, args: Record<string, unknown> = {}) => {
+      if (command === "lark_attachment_preview") {
+        if (
+          !["BaseA", "BaseB"].includes(String(args.sourceId)) ||
+          args.recordId !== "recA" ||
+          args.fieldId !== "attachments" ||
+          args.fileToken !== "imageA"
+        )
+          throw new Error("Attachment is not part of this record");
+        if (
+          new URLSearchParams(location.search).has("image-error") &&
+          previewAttempts++ === 0
+        )
+          throw new Error("Attachment access denied. Open the source in Lark.");
+        return "/monocode.png";
+      }
+      if (command === "set_trackpad_zoom_enabled") return;
       if (command === "lark_status") return structuredClone(status);
       if (command.endsWith("_status"))
         return { connected: false, installed: false, authenticated: false };
@@ -91,6 +215,17 @@ Object.assign(window, {
         return;
       }
       if (command === "lark_remove_source") {
+        if (
+          new URLSearchParams(location.search).has("remove-error") &&
+          removeAttempts++ === 0
+        ) {
+          await new Promise<void>((resolve) =>
+            window.addEventListener("fixture:fail-removal", () => resolve(), {
+              once: true,
+            }),
+          );
+          throw new Error("Could not save Lark settings");
+        }
         status.sources = status.sources.filter((entry) => entry.id !== args.id);
         return;
       }
@@ -137,6 +272,7 @@ Object.assign(window, {
               ? "Document acceptance requirements"
               : `Reproduction steps for ${args.sourceId}`,
           truncated: false,
+          fields: args.sourceId === "DocA" ? [] : recordFields(args.sourceId),
         };
       if (
         command === "git_github_repositories" ||
@@ -164,9 +300,12 @@ localStorage.setItem(
 );
 
 function Fixture() {
-  const [settings, setSettings] = useState(true);
+  const [settings, setSettings] = useState(
+    !recordsFixture || new URLSearchParams(location.search).has("settings"),
+  );
   const [sent, setSent] = useState("");
   const [revoked, setRevoked] = useState(false);
+  const [closed, setClosed] = useState(false);
   return (
     <div className="flex h-full flex-col bg-surface text-content">
       <header className="flex flex-wrap items-center gap-4 border-b border-stroke p-3 text-[12px]">
@@ -188,6 +327,8 @@ function Fixture() {
         <main className="mx-auto w-full max-w-3xl overflow-y-auto">
           <LarkSettings />
         </main>
+      ) : closed ? (
+        <span>Inbox closed</span>
       ) : (
         <InboxView
           cwd="/fixture/project"
@@ -197,6 +338,7 @@ function Fixture() {
           onAskRestart={async () => "fixture-session"}
           onAskMount={() => {}}
           onOpenIntegrations={() => setSettings(true)}
+          onClose={() => setClosed(true)}
           onStart={async (item, body) => {
             setSent(`Context sent: ${item.title} / ${body}`);
           }}

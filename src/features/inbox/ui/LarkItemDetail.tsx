@@ -3,6 +3,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import type { InboxItem } from "../model/githubTasks";
 import { larkItemDetails, type LarkDetails } from "../model/lark";
+import { LarkRecordFields } from "./LarkRecordFields";
+import { larkDate } from "../model/larkFields";
 
 export function LarkItemDetail({
   item,
@@ -50,6 +52,7 @@ export function LarkItemDetail({
     };
   }, [item.id, item.teamId, item.larkRecordId, item.updatedAt, revision]);
   const document = item.larkKind === "document";
+  const updated = larkDate(Date.parse(item.updatedAt), true);
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto p-5 text-[13px] text-content">
       <div className="mb-2 text-[11px] text-content/45">
@@ -60,6 +63,14 @@ export function LarkItemDetail({
         {item.teamName}
         {!document && item.stateType ? ` · ${item.stateType}` : ""}
       </p>
+      {updated.iso ? (
+        <p className="mt-1 text-[11px] text-content/40">
+          Updated{" "}
+          <time dateTime={updated.iso} title={updated.iso}>
+            {updated.text}
+          </time>
+        </p>
+      ) : null}
       <div className="my-4 flex flex-wrap items-center gap-2">
         <SecondaryButton disabled={loading || !!error} onClick={onDiscuss}>
           Ask
@@ -141,11 +152,14 @@ export function LarkItemDetail({
       ) : null}
       {details?.truncated ? (
         <p className="mb-2 text-amber-500">
-          Content is truncated. Open the source for the complete document or
-          record.
+          {details.fields?.length
+            ? "Agent text context is truncated. Record fields are shown below."
+            : "Content is truncated. Open the source for the complete document or record."}
         </p>
       ) : null}
-      {details ? (
+      {!document && details?.fields?.length ? (
+        <LarkRecordFields fields={details.fields} item={item} />
+      ) : details ? (
         <pre className="whitespace-pre-wrap break-words font-sans text-[13px] leading-6 text-content/80">
           {details.body || "No text content"}
         </pre>

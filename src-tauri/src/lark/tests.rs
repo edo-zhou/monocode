@@ -205,13 +205,30 @@ fn does_not_follow_redirects_or_accept_their_success_payloads() {
 }
 
 fn mock_client(responses: Vec<Value>) -> (Client, std::thread::JoinHandle<Vec<(String, Value)>>) {
+    mock_http_client(
+        responses
+            .into_iter()
+            .map(|data| {
+                (
+                    200,
+                    "application/json",
+                    json!({ "code": 0, "data": data }).to_string().into_bytes(),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn mock_http_client(
+    responses: Vec<(u16, &'static str, Vec<u8>)>,
+) -> (Client, std::thread::JoinHandle<Vec<(String, Value)>>) {
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let worker = std::thread::spawn(move || {
         let mut requests = vec![];
-        for data in responses {
+        for (status, content_type, body) in responses {
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
@@ -236,8 +253,8 @@ fn mock_client(responses: Vec<Value>) -> (Client, std::thread::JoinHandle<Vec<(S
                 first.trim().to_string(),
                 serde_json::from_slice(&bytes).unwrap_or(Value::Null),
             ));
-            let body = json!({ "code": 0, "data": data }).to_string();
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            write!(stream, "HTTP/1.1 {status} Response\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+            let _ = stream.write_all(&body);
         }
         requests
     });
@@ -308,6 +325,132 @@ fn verifies_wiki_documents_by_reading_the_resolved_docx_content() {
 }
 
 #[test]
+fn record_details_preserve_typed_fields_attachments_and_exact_numbers_over_http() {
+    let (client, worker) = mock_client(vec![
+        json!({"items":[
+            {"field_id":"due","field_name":"Due date","type":5,"property":{"date_formatter":"yyyy/MM/dd"}},
+            {"field_id":"checked","field_name":"Verified","type":7},
+            {"field_id":"image","field_name":"Screenshot","type":17},
+            {"field_id":"exact","field_name":"Exact ID","type":2},
+            {"field_id":"empty","field_name":"Empty","type":1}
+        ],"has_more":false}),
+        json!({"records":[{"record_id":"recA","fields":{
+            "Due date":1792051200000_i64,
+            "Verified":false,
+            "Screenshot":[{"file_token":"imageA","name":"checkout.png","type":"image/png","size":42}],
+            "Exact ID":9007199254740993123_u64
+        }}]}),
+    ]);
+    let details = record_details(&client, &source(), "recA").unwrap();
+    let serialized = serde_json::to_value(&details).unwrap();
+    assert_eq!(serialized["fields"][0]["dateFormat"], "yyyy/MM/dd");
+    assert_eq!(serialized["fields"][0]["value"], 1792051200000_i64);
+    assert_eq!(serialized["fields"][1]["value"], false);
+    assert_eq!(serialized["fields"][2]["value"][0]["file_token"], "imageA");
+    assert_eq!(serialized["fields"][3]["value"], "9007199254740993123");
+    assert_eq!(serialized["fields"][4]["value"], Value::Null);
+    assert!(details.body.contains("2026-10-15T08:00:00Z"));
+    let requests = worker.join().unwrap();
+    assert_eq!(requests[1].1["record_ids"], json!(["recA"]));
+    assert!(requests[1]
+        .0
+        .starts_with("POST /bitable/v1/apps/BaseA/tables/TableA/records/batch_get "));
+}
+
+fn attachment_responses(attachment: Value) -> Vec<Value> {
+    vec![
+        json!({"items":[{"field_id":"image","field_name":"Screenshot","type":17}],"has_more":false}),
+        json!({"records":[{"record_id":"recA","fields":{"Screenshot":[attachment]}}]}),
+    ]
+}
+
+#[test]
+fn previews_only_verified_record_images_with_scoped_media_permission() {
+    let mut responses: Vec<_> = attachment_responses(json!({"file_token":"imageA","name":"checkout.png","type":"image/png","size":8,"url":"https://evil.test/steal"}))
+        .into_iter().map(|data| (200, "application/json", json!({"code":0,"data":data}).to_string().into_bytes())).collect();
+    responses.push((200, "image/png", b"\x89PNG\r\n\x1a\n".to_vec()));
+    let (client, worker) = mock_http_client(responses);
+    let preview = attachment_preview(&client, &source(), "recA", "image", "imageA").unwrap();
+    assert_eq!(preview, "data:image/png;base64,iVBORw0KGgo=");
+    let requests = worker.join().unwrap();
+    let path = requests[2].0.split_whitespace().nth(1).unwrap();
+    let url = Url::parse(&format!("https://open.larksuite.com{path}")).unwrap();
+    assert_eq!(url.path(), "/drive/v1/medias/imageA/download");
+    let extra: Value =
+        serde_json::from_str(&url.query_pairs().find(|(key, _)| key == "extra").unwrap().1)
+            .unwrap();
+    assert_eq!(
+        extra,
+        json!({"bitablePerm":{"tableId":"TableA","attachments":{"image":{"recA":["imageA"]}}}})
+    );
+    assert!(!preview.contains("fixture-token"));
+}
+
+#[test]
+fn refuses_missing_non_image_oversized_and_unsafe_attachment_references() {
+    for (attachment, message) in [
+        (
+            json!({"file_token":"different","type":"image/png","size":8}),
+            "no longer accessible",
+        ),
+        (
+            json!({"file_token":"imageA","type":"image/svg+xml","size":8}),
+            "Only PNG",
+        ),
+        (
+            json!({"file_token":"imageA","type":"image/png","size":MAX_IMAGE_BYTES+1}),
+            "8 MB",
+        ),
+    ] {
+        let (client, worker) = mock_client(attachment_responses(attachment));
+        assert!(
+            attachment_preview(&client, &source(), "recA", "image", "imageA")
+                .unwrap_err()
+                .contains(message)
+        );
+        assert_eq!(worker.join().unwrap().len(), 2);
+    }
+    let (client, worker) = mock_client(vec![]);
+    assert!(
+        attachment_preview(&client, &source(), "recA", "image", "../secret")
+            .unwrap_err()
+            .contains("Invalid")
+    );
+    assert!(worker.join().unwrap().is_empty());
+}
+
+#[test]
+fn media_reader_rejects_spoofed_content_redirects_and_oversized_bodies() {
+    for (status, content_type, bytes, expected) in [
+        (
+            200,
+            "image/png",
+            b"<svg onload='steal()'>secret</svg>".to_vec(),
+            "not a supported image",
+        ),
+        (200, "image/png", vec![0; MAX_IMAGE_BYTES + 1], "8 MB"),
+        (
+            302,
+            "application/json",
+            br#"{"code":0,"data":{}}"#.to_vec(),
+            "302",
+        ),
+        (
+            403,
+            "application/json",
+            br#"{"code":91403,"msg":"secret-token"}"#.to_vec(),
+            "access denied",
+        ),
+    ] {
+        let (client, worker) = mock_http_client(vec![(status, content_type, bytes)]);
+        let error = image_response(client.agent.get(&client.origin).call()).unwrap_err();
+        assert!(error.contains(expected), "{error}");
+        assert!(!error.contains("secret"));
+        worker.join().unwrap();
+    }
+}
+
+#[test]
 fn refuses_nonzero_api_codes_without_reflecting_server_secrets() {
     use std::net::TcpListener;
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -329,4 +472,100 @@ fn refuses_nonzero_api_codes_without_reflecting_server_secrets() {
     worker.join().unwrap();
     assert!(error.contains("access denied"));
     assert!(!error.contains("secret-access-token"));
+}
+
+fn response_error(status: u16, body: &str) -> String {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let body = body.to_string();
+    let worker = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut bytes = [0; 4096];
+        let _ = stream.read(&mut bytes).unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    let response = agent().get(&origin).call();
+    worker.join().unwrap();
+    response_json(response).unwrap_err()
+}
+
+#[test]
+fn http_errors_preserve_missing_scope_diagnostics_without_exposing_credentials() {
+    for (status, read_scope, write_scope) in [
+        (400, "wiki:wiki:readonly", "wiki:wiki"),
+        (400, "bitable:app:readonly", "bitable:app"),
+        (200, "docx:document:readonly", "docx:document"),
+    ] {
+        let body = json!({
+            "code": 99991672,
+            "msg": "Access denied. Bearer secret-access-token",
+            "error": {
+                "permission_violations": [
+                    {"type": "action_scope_required", "subject": write_scope},
+                    {"type": "action_scope_required", "subject": read_scope},
+                    {"type": "action_scope_required", "subject": read_scope}
+                ]
+            }
+        });
+        let error = response_error(status, &body.to_string());
+        assert!(error.contains("99991672"), "{error}");
+        assert!(error.contains("application API permission"), "{error}");
+        assert!(error.contains("application identity"), "{error}");
+        assert!(error.contains("publish"), "{error}");
+        assert_eq!(error.matches(read_scope).count(), 1, "{error}");
+        assert!(!error.contains("secret-access-token"), "{error}");
+        if status != 200 {
+            assert!(error.contains(&format!("HTTP {status}")), "{error}");
+        }
+    }
+}
+
+#[test]
+fn preserves_resource_errors_and_http_fallbacks() {
+    let error = response_error(403, r#"{"code":91403,"msg":"secret-access-token"}"#);
+    assert!(error.contains("91403"), "{error}");
+    assert!(error.contains("HTTP 403"), "{error}");
+    assert!(error.contains("share this Base"), "{error}");
+    assert!(!error.contains("secret-access-token"));
+
+    for (status, body) in [
+        (401, "<html>secret-access-token</html>"),
+        (429, ""),
+        (500, r#"{"msg":"secret-access-token"}"#),
+        (400, r#"{"code":0,"data":{}}"#),
+    ] {
+        let error = response_error(status, body);
+        assert!(error.contains(&status.to_string()), "{error}");
+        assert!(!error.contains("secret-access-token"));
+    }
+}
+
+#[test]
+fn ignores_untrusted_permission_details() {
+    let body = json!({
+        "code": 99991672,
+        "msg": "secret-access-token",
+        "error": {
+            "log_id": "secret-access-token",
+            "permission_violations": [
+                {"type": "action_scope_required", "subject": "wiki:wiki:readonly\nsecret-access-token"},
+                {"type": "action_scope_required", "subject": "secret-access-token"},
+                {"type": "resource_permission_required", "subject": "bitable:app:readonly"}
+            ]
+        }
+    });
+    let error = response_error(400, &body.to_string());
+    assert!(error.contains("application API permission"), "{error}");
+    assert!(!error.contains("secret-access-token"));
+    assert!(!error.contains("bitable:app:readonly"));
 }

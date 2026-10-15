@@ -32,6 +32,7 @@ export type LarkField = {
   kind: number;
   primary: boolean;
   options: string[];
+  dateFormat?: string;
 };
 export type LarkPreview = {
   source: LarkSource;
@@ -52,7 +53,12 @@ export type LarkItem = {
   updatedAt: string;
   assignees: string[];
 };
-export type LarkDetails = { body: string; truncated: boolean };
+export type LarkRecordField = LarkField & { value: unknown };
+export type LarkDetails = {
+  body: string;
+  truncated: boolean;
+  fields?: LarkRecordField[];
+};
 export const LARK_CHANGE_EVENT = "monocode:lark-change";
 let sourceRevision = 0;
 

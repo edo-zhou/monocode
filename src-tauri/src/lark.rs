@@ -1,3 +1,4 @@
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -12,8 +13,10 @@ use url::Url;
 const MAX_SOURCES: usize = 50;
 const MAX_RECORDS: usize = 1000;
 const MAX_BODY: usize = 32_000;
+const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 static STATE: Mutex<State> = Mutex::new(State { token: None });
 static DOCUMENT_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
+static MEDIA_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
 
 struct State {
     token: Option<CachedToken>,
@@ -101,6 +104,7 @@ pub struct Field {
     kind: u64,
     primary: bool,
     options: Vec<String>,
+    date_format: String,
 }
 
 #[derive(Serialize)]
@@ -138,6 +142,14 @@ pub struct Inbox {
 pub struct Details {
     body: String,
     truncated: bool,
+    fields: Vec<RecordField>,
+}
+
+#[derive(Serialize)]
+pub struct RecordField {
+    #[serde(flatten)]
+    field: Field,
+    value: Value,
 }
 
 struct Client {
@@ -425,22 +437,141 @@ pub async fn lark_item_details(
         if !valid_id(&record_id) {
             return Err("Invalid Lark record ID".into());
         }
-        let fields = client.fields(source)?;
-        let data = client.request(
-            &format!("{}/records/batch_get", table_path(source)),
-            Some(json!({ "record_ids": [record_id], "automatic_fields": true })),
-        )?;
-        let record = data["records"]
-            .as_array()
-            .and_then(|records| {
-                records
-                    .iter()
-                    .find(|record| string(record, "record_id") == record_id)
-            })
-            .ok_or("Record is missing or no longer accessible")?;
-        Ok(limit_body(record_body(record, &fields)))
+        record_details(&client, source, &record_id)
     })
     .await
+}
+
+#[tauri::command]
+pub async fn lark_attachment_preview(
+    app: AppHandle,
+    source_id: String,
+    record_id: String,
+    field_id: String,
+    file_token: String,
+) -> Result<String, String> {
+    let (client, source) = blocking(move |state| {
+        let config = require_config(&app)?;
+        let source = config
+            .sources
+            .iter()
+            .find(|source| source.id == source_id && source.enabled)
+            .ok_or("This Lark source was removed or disabled")?;
+        Ok((client(&app, &config, state)?, source.clone()))
+    })
+    .await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        attachment_preview(&client, &source, &record_id, &field_id, &file_token)
+    })
+    .await
+    .map_err(|_| "Lark image preview could not finish".to_string())?
+}
+
+fn attachment_preview(
+    client: &Client,
+    source: &Source,
+    record_id: &str,
+    field_id: &str,
+    file_token: &str,
+) -> Result<String, String> {
+    if source.kind != SourceKind::Base
+        || ![record_id, field_id, file_token]
+            .iter()
+            .all(|id| valid_id(id))
+    {
+        return Err("Invalid Base attachment reference".into());
+    }
+    let fields = client.fields(source)?;
+    let field = fields
+        .iter()
+        .find(|field| field.id == field_id && field.kind == 17)
+        .ok_or("Attachment field is missing. Open the source in Lark for computed attachments.")?;
+    let record = read_record(client, source, record_id)?;
+    let attachment = record["fields"][&field.name]
+        .as_array()
+        .and_then(|attachments| {
+            attachments
+                .iter()
+                .find(|attachment| string(attachment, "file_token") == file_token)
+        })
+        .ok_or("Attachment is missing or no longer accessible in this record")?;
+    if !matches!(
+        attachment["type"].as_str(),
+        Some("image/png" | "image/jpeg" | "image/gif" | "image/webp")
+    ) {
+        return Err(
+            "Open this attachment in Lark. Only PNG, JPEG, GIF and WebP have inline previews."
+                .into(),
+        );
+    }
+    if attachment["size"]
+        .as_u64()
+        .is_some_and(|size| size > MAX_IMAGE_BYTES as u64)
+    {
+        return Err("Image exceeds the 8 MB preview limit. Open it in Lark.".into());
+    }
+    let extra = json!({"bitablePerm":{"tableId":source.table_id,"attachments":{field_id:{record_id:[file_token]}}}});
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("extra", &extra.to_string())
+        .finish();
+    {
+        let mut previous = MEDIA_REQUEST.lock().map_err(|_| "Image reader is busy")?;
+        if let Some(last) = *previous {
+            std::thread::sleep(Duration::from_millis(250).saturating_sub(last.elapsed()));
+        }
+        *previous = Some(Instant::now());
+    }
+    let response = client
+        .agent
+        .get(&format!(
+            "{}/drive/v1/medias/{file_token}/download?{query}",
+            client.origin
+        ))
+        .set("Authorization", &format!("Bearer {}", client.token))
+        .call();
+    image_response(response)
+}
+
+fn image_response(response: Result<ureq::Response, ureq::Error>) -> Result<String, String> {
+    let response = match response {
+        Ok(response) if response.status() == 200 && !response.content_type().contains("json") => {
+            response
+        }
+        other => {
+            return response_json(other).and_then(|_| Err("Lark did not return an image".into()))
+        }
+    };
+    if response
+        .header("Content-Length")
+        .and_then(|length| length.parse::<usize>().ok())
+        .is_some_and(|length| length > MAX_IMAGE_BYTES)
+    {
+        return Err("Image exceeds the 8 MB preview limit. Open it in Lark.".into());
+    }
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take((MAX_IMAGE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read the Lark image. Retry the preview.")?;
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err("Image exceeds the 8 MB preview limit. Open it in Lark.".into());
+    }
+    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        "image/webp"
+    } else {
+        return Err("This file is not a supported image. Open it in Lark.".into());
+    };
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 fn status(config: Option<Config>) -> Status {
@@ -524,13 +655,11 @@ fn client(app: &AppHandle, config: &Config, state: &mut State) -> Result<Client,
 
 fn response_json(response: Result<ureq::Response, ureq::Error>) -> Result<Value, String> {
     let response = match response {
-        Ok(response) => response,
-        Err(ureq::Error::Status(code, _)) => return Err(api_error(code.into())),
+        Ok(response) | Err(ureq::Error::Status(_, response)) => response,
         Err(_) => return Err("Could not reach Lark. Check your network and retry.".into()),
     };
-    if !(200..300).contains(&response.status()) {
-        return Err(api_error(response.status().into()));
-    }
+    let status = response.status();
+    let success = (200..300).contains(&status);
     let mut body = String::new();
     response
         .into_reader()
@@ -540,21 +669,64 @@ fn response_json(response: Result<ureq::Response, ureq::Error>) -> Result<Value,
     if body.len() > 8 * 1024 * 1024 {
         return Err("Lark response is too large. Use a narrower view.".into());
     }
-    let value: Value =
-        serde_json::from_str(&body).map_err(|_| "Lark returned an invalid response")?;
-    let code = value["code"]
-        .as_i64()
-        .ok_or("Lark response is missing its result code")?;
-    if code != 0 {
-        return Err(api_error(code));
+    let value: Value = serde_json::from_str(&body).map_err(|_| {
+        if success {
+            "Lark returned an invalid response".into()
+        } else {
+            api_error(status.into())
+        }
+    })?;
+    if let Some(code) = value["code"].as_i64() {
+        if code != 0 {
+            return Err(api_response_error(code, status, &value));
+        }
+    } else if success {
+        return Err("Lark response is missing its result code".into());
+    }
+    if !success {
+        return Err(api_error(status.into()));
     }
     Ok(value)
+}
+
+fn api_response_error(code: i64, status: u16, value: &Value) -> String {
+    let mut error = api_error(code);
+    if code == 99991672 {
+        let mut scopes = vec![];
+        if let Some(violations) = value["error"]["permission_violations"].as_array() {
+            for violation in violations {
+                if violation["type"] != "action_scope_required" {
+                    continue;
+                }
+                if let Some(scope) = violation["subject"].as_str() {
+                    if matches!(
+                        scope,
+                        "bitable:app:readonly" | "docx:document:readonly" | "wiki:wiki:readonly"
+                    ) && !scopes.contains(&scope)
+                    {
+                        scopes.push(scope);
+                    }
+                }
+            }
+        }
+        if !scopes.is_empty() {
+            error.push_str(&format!(
+                " Enable one of these read scopes: {}.",
+                scopes.join(", ")
+            ));
+        }
+    }
+    if !(200..300).contains(&status) {
+        error.push_str(&format!(" HTTP {status}."));
+    }
+    error
 }
 
 fn api_error(code: i64) -> String {
     match code {
         401 | 99991661 | 99991663 | 99991664 | 99991668 => format!("Lark authorization expired or is invalid ({code}). Recheck the connection."),
-        403 | 91403 | 99991672 | 99991679 | 1254302 | 1770032 => format!("Lark access denied ({code}). Publish the read scopes and share this Base, document or Wiki with the app. API scopes alone do not grant document access."),
+        99991672 => format!("Lark is missing an application API permission ({code}). Enable read scopes under application identity permissions in the developer console, publish the app version and obtain approval if required, then check the connection again."),
+        403 | 91403 | 99991679 | 1254302 | 1770032 => format!("Lark access denied ({code}). Publish the read scopes and share this Base, document or Wiki with the app. API scopes alone do not grant document access."),
         429 | 99991400 | 1254290 | 1254291 => format!("Lark rate limit reached ({code}). Wait briefly, then refresh."),
         _ => format!("Lark request failed ({code}). Check the app region, published read scopes, resource permissions and link."),
     }
@@ -768,6 +940,59 @@ fn document_content(client: &Client, token: &str) -> Result<Details, String> {
     Ok(limit_body(body.to_string()))
 }
 
+fn read_record(client: &Client, source: &Source, record_id: &str) -> Result<Value, String> {
+    let data = client.request(
+        &format!("{}/records/batch_get", table_path(source)),
+        Some(json!({ "record_ids": [record_id], "automatic_fields": true })),
+    )?;
+    data["records"]
+        .as_array()
+        .and_then(|records| {
+            records
+                .iter()
+                .find(|record| string(record, "record_id") == record_id)
+        })
+        .cloned()
+        .ok_or_else(|| "Record is missing or no longer accessible".into())
+}
+
+fn record_details(client: &Client, source: &Source, record_id: &str) -> Result<Details, String> {
+    let fields = client.fields(source)?;
+    let record = read_record(client, source, record_id)?;
+    let mut details = limit_body(record_body(&record, &fields));
+    details.fields = fields
+        .into_iter()
+        .map(|field| {
+            let value = precise_value(&record["fields"][&field.name]);
+            RecordField { field, value }
+        })
+        .collect();
+    Ok(details)
+}
+
+fn precise_value(value: &Value) -> Value {
+    match value {
+        Value::Number(number)
+            if number
+                .as_u64()
+                .is_some_and(|number| number > 9_007_199_254_740_991)
+                || number
+                    .as_i64()
+                    .is_some_and(|number| number < -9_007_199_254_740_991) =>
+        {
+            Value::String(number.to_string())
+        }
+        Value::Array(values) => Value::Array(values.iter().map(precise_value).collect()),
+        Value::Object(values) => Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), precise_value(value)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
 fn record_item(source: &Source, record: &Value, fields: &[Field]) -> Item {
     let value = |id: &str| {
         fields
@@ -848,6 +1073,7 @@ fn parse_field(value: &Value) -> Field {
                     .collect()
             })
             .unwrap_or_default(),
+        date_format: string(&value["property"], "date_formatter"),
     }
 }
 
@@ -921,11 +1147,43 @@ fn record_body(record: &Value, fields: &[Field]) -> String {
             format!(
                 "{}: {}",
                 field.name,
-                cell_text(&record["fields"][&field.name])
+                field_text(field.kind, &record["fields"][&field.name])
             )
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+fn field_text(kind: u64, value: &Value) -> String {
+    if matches!(kind, 19 | 20) && value["type"].is_u64() {
+        return field_text(value["type"].as_u64().unwrap_or(0), &value["value"]);
+    }
+    if matches!(kind, 5 | 1001 | 1002) {
+        if let Some(values) = value.as_array() {
+            return values
+                .iter()
+                .map(|value| field_text(kind, value))
+                .collect::<Vec<_>>()
+                .join(", ");
+        }
+        let millis = value
+            .as_i64()
+            .or_else(|| value.as_str().and_then(|value| value.parse().ok()));
+        if let Some(date) =
+            millis.and_then(|millis| time::OffsetDateTime::from_unix_timestamp(millis / 1000).ok())
+        {
+            return format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                date.year(),
+                u8::from(date.month()),
+                date.day(),
+                date.hour(),
+                date.minute(),
+                date.second()
+            );
+        }
+    }
+    cell_text(value)
 }
 
 fn cell_text(value: &Value) -> String {
@@ -955,7 +1213,11 @@ fn limit_body(body: String) -> Details {
     if truncated {
         body.push_str("\n\n[Content truncated. Open the source in Lark for the full content.]");
     }
-    Details { body, truncated }
+    Details {
+        body,
+        truncated,
+        fields: vec![],
+    }
 }
 
 fn pages(

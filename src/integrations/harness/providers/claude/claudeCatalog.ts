@@ -391,6 +391,9 @@ function modelFromListRow(raw: unknown): AgentModel | null {
     ...(isNamespacedClaudeModel(nativeId)
       ? { provider: { id: "claude-local", name: "Local models" } }
       : {}),
+    ...(fromResolved.id && fromResolved.id !== nativeId
+      ? { aliasTarget: fromResolved.id }
+      : {}),
     ...(settings.length > 0 ? { settings } : {}),
   };
 }

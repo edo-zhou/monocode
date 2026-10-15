@@ -19,7 +19,7 @@ import {
 } from "../../orchestration/model/orchestration";
 import { DiscussionEmpty } from "./DiscussionEmpty";
 import { LinkedWorkItemUpdateNotice } from "../../inbox/ui/LinkedWorkItemUpdateNotice";
-import { SessionChangesButton, SessionReview } from "./SessionReview";
+import { SessionReview } from "./SessionReview";
 import { sessionEditPaths } from "../model/checkpointEdits";
 import { PromptOutline } from "./PromptOutline";
 import {
@@ -72,6 +72,8 @@ import { MonoComposer } from "../../monos/ui/MonoComposer";
 import type { LaunchedSessionView } from "../../monos/model/monoSpawnedSessions";
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
 import { ContextMeter } from "./ContextMeter";
+import { UsageChips } from "../../../app/shell/UsageFooter";
+import type { RateLimitProvider } from "../../providers/model/rateLimits";
 import { MonoUsageLimitNotice } from "../../monos/ui/MonoUsageLimitNotice";
 import { QuestionForm } from "./QuestionForm";
 import {
@@ -1061,18 +1063,6 @@ const LocalSessionPane = memo(function LocalSessionPane({
                           }
                         : undefined
                     }
-                    editTurnAction={
-                      reviewHidden || !agent ? undefined : (
-                        <SessionChangesButton
-                          sessionId={session.id}
-                          editedPaths={editedPaths}
-                          cwd={workCwd}
-                          enabled={visible}
-                          busy={!!session.busy}
-                          onOpenDiff={onOpenDiff}
-                        />
-                      )
-                    }
                     latestTurnAccessory={
                       reviewHidden || agent ? undefined : (
                         <SessionReview
@@ -1202,6 +1192,26 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     onSubmit={(text, attachments) =>
                       onSubmit(session.id, text, attachments)
                     }
+                    // The plan's usage, as the session footer shows it,
+                    // which a Mono in full view covers. Its account moves
+                    // with the usage-limit notice, not here. A narrow chat
+                    // drops it first, then shows the model controls as icons.
+                    tools={
+                      <div className="flex shrink-0 items-center gap-0.5 text-[11px] text-content/55 @max-md:hidden">
+                        <UsageChips
+                          providers={monoUsageProviders(session.harness)}
+                          session={{
+                            id: session.id,
+                            harness: session.harness,
+                            model: session.model,
+                            providerAccountId: session.providerAccountId,
+                          }}
+                          project={session.cwd}
+                          accountPicker={false}
+                          variant="composer"
+                        />
+                      </div>
+                    }
                     controls={
                       <>
                         <ModelPicker
@@ -1213,6 +1223,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                           hideSettings
                           hotkeys={focused && !btw.open}
                           variant="text"
+                          labelClassName="@max-sm:hidden"
                           onChange={(harness, model) =>
                             onModelChange(session.id, harness, model)
                           }
@@ -1225,6 +1236,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                           model={session.model}
                           values={session.modelSettings}
                           variant="text"
+                          labelClassName="@max-sm:hidden"
                           onSettingsChange={(settings) =>
                             onModelSettingsChange(session.id, settings)
                           }
@@ -1233,7 +1245,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                             its current thread is. It rotates threads itself,
                             so there is nothing to compact here. */}
                         <div className="grid size-6.5 place-items-center rounded-md transition-colors hover:bg-content/8">
-                          <ContextMeter usage={session.context} />
+                          <ContextMeter usage={session.context} empty={isEmpty} />
                         </div>
                       </>
                     }
@@ -1262,3 +1274,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
     </div>
   );
 });
+
+/** The providers whose plan usage a Mono on `harness` shows by its composer. */
+function monoUsageProviders(harness: HarnessId): RateLimitProvider[] {
+  return harness === "claude" ||
+    harness === "codex" ||
+    harness === "opencode" ||
+    harness === "devin"
+    ? [harness]
+    : [];
+}

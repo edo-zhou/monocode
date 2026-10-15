@@ -5,11 +5,12 @@ export type InboxAskContext = {
   key: string;
   title: string;
   url: string;
-  provider: "github" | "linear" | "jira" | "gitlab" | "azuredevops";
+  provider: InboxItem["provider"];
   description?: string;
 };
 
 export function inboxAskKey(item: InboxItem): string {
+  if (item.provider === "lark") return `lark:${item.id || item.url}`;
   if (item.provider === "linear" || item.provider === "jira") {
     return `${item.provider}:${item.id}`;
   }

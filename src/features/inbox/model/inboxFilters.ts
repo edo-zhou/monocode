@@ -70,6 +70,7 @@ export const INBOX_SOURCE_LABELS: Record<InboxSource, string> = {
   jira: "Jira",
   gitlab: "GitLab",
   azuredevops: "ADO",
+  lark: "Lark",
 };
 
 export function visibleInboxSources(
@@ -81,6 +82,7 @@ export function visibleInboxSources(
   if (connections.jira !== false) sources.push("jira");
   if (connections.gitlab !== false) sources.push("gitlab");
   if (connections.azuredevops !== false) sources.push("azuredevops");
+  if (connections.lark === true) sources.push("lark");
   return sources;
 }
 
@@ -93,12 +95,13 @@ export function connectableInboxSources(
   if (connections.jira === false) sources.push("jira");
   if (connections.gitlab === false) sources.push("gitlab");
   if (connections.azuredevops === false) sources.push("azuredevops");
+  if (connections.lark === false) sources.push("lark");
   return sources;
 }
 
 /** Account-wide issue trackers: no local repos, no PRs, no draft/merged states. */
 export function isTrackerSource(source?: InboxSource): boolean {
-  return source === "linear" || source === "jira";
+  return source === "linear" || source === "jira" || source === "lark";
 }
 
 export function resolveInboxSource(
@@ -119,12 +122,14 @@ const UNKNOWN_CONNECTIONS: InboxSourceConnections = {
   jira: null,
   gitlab: null,
   azuredevops: null,
+  lark: null,
 };
 
 export function loadInboxSource(): InboxSource {
   try {
     const raw = localStorage.getItem(SOURCE_KEY);
-    return raw === "linear" ||
+    return raw === "lark" ||
+      raw === "linear" ||
       raw === "jira" ||
       raw === "gitlab" ||
       raw === "azuredevops"
@@ -163,6 +168,7 @@ export function loadInboxConnections(): InboxSourceConnections {
       jira: connectFlag(record.jira),
       gitlab: connectFlag(record.gitlab),
       azuredevops: connectFlag(record.azuredevops),
+      lark: connectFlag(record.lark),
     };
   } catch {
     return UNKNOWN_CONNECTIONS;
@@ -248,12 +254,14 @@ export function hasActiveInboxFilters(
       filters.status.closed ||
       filters.status.merged;
   return (
-    filters.assignedToMe ||
+    (source !== "lark" && filters.assignedToMe) ||
     (source === "linear" && hiddenLinearTeamIds.length > 0) ||
     (source === "jira" && hiddenJiraProjectIds.length > 0) ||
     (source === "linear"
       ? filters.hiddenLinearProjects.length > 0
-      : source !== "jira" && filters.hiddenProjects.length > 0) ||
+      : source !== "jira" &&
+        source !== "lark" &&
+        filters.hiddenProjects.length > 0) ||
     (isTrackerSource(source) ? false : filters.hiddenKinds.length > 0) ||
     filters.time !== "all" ||
     statusActive

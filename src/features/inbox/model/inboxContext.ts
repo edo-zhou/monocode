@@ -1,12 +1,14 @@
 import type { InboxItem } from "./githubTasks";
 import { jiraIssueDetails, peekJiraIssueDetails } from "./jira";
 import { linearIssueDetails, peekLinearIssueDetails } from "./linear";
+import { larkItemDetails } from "./lark";
 
 /** Load tracker context before opening a session, including from list actions. */
 export async function inboxTrackerDescription(
   item: InboxItem,
   body?: string,
 ): Promise<string | undefined> {
+  if (item.provider === "lark") return body ?? (await larkItemDetails(item)).body;
   if (item.provider !== "linear" && item.provider !== "jira") return body;
   if (body !== undefined) return body;
   if (item.provider === "jira") {

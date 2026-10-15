@@ -41,6 +41,7 @@ import {
 import { Popover } from "../../../shared/ui/Popover";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import { JiraSettings } from "./JiraSettings";
+import { LarkSettings } from "./LarkSettings";
 import { GradientBlurBackground } from "./GradientBlurBackground";
 import { McpSettings } from "./McpSettings";
 import { InboxProviderMark } from "../../inbox/ui/InboxProviderMark";
@@ -1280,6 +1281,18 @@ function InboxPage({
         description="Issues assigned to you, from the teams you pick."
       >
         <LinearSettings />
+      </Group>
+      <Group
+        id="lark"
+        title={
+          <span className="flex items-center gap-2">
+            <InboxProviderMark provider="lark" className="size-4 shrink-0" />
+            Lark / Feishu
+          </span>
+        }
+        description="Multiple Base tables and separate Docx/Wiki reference documents. No CLI required."
+      >
+        <LarkSettings />
       </Group>
     </>
   );

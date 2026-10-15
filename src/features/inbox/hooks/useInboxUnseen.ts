@@ -42,6 +42,7 @@ import {
 } from "../model/linkedSessionSeen";
 import { loadHiddenLinearTeamIds } from "../model/linear";
 import { JIRA_CHANGE_EVENT, loadHiddenJiraProjectIds } from "../model/jira";
+import { LARK_CHANGE_EVENT } from "../model/lark";
 import type { RecentProject } from "../../projects/model/recents";
 import type { SessionSummary } from "../../sessions/data/sessionStore";
 import { playCue } from "../../settings/model/sounds";
@@ -307,11 +308,13 @@ export function useInboxActivity(
     document.addEventListener("visibilitychange", onVis);
     const onJiraChange = () => void pull(true);
     window.addEventListener(JIRA_CHANGE_EVENT, onJiraChange);
+    window.addEventListener(LARK_CHANGE_EVENT, onJiraChange);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener(JIRA_CHANGE_EVENT, onJiraChange);
+      window.removeEventListener(LARK_CHANGE_EVENT, onJiraChange);
       stopSelfActivity();
     };
   }, [applyUnseen, cwd, recents]);

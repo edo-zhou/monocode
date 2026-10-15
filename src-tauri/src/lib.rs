@@ -21,6 +21,7 @@ mod harness_updates;
 mod inbox_media;
 mod jira;
 mod jsonc;
+mod lark;
 mod linear;
 mod link_preview;
 #[cfg(target_os = "macos")]
@@ -425,6 +426,16 @@ pub fn run() {
             jira::jira_issue_details,
             jira::jira_issue_thread,
             jira::jira_issue_comment,
+            lark::lark_status,
+            lark::lark_connect,
+            lark::lark_check_connection,
+            lark::lark_disconnect,
+            lark::lark_preview_source,
+            lark::lark_save_source,
+            lark::lark_toggle_source,
+            lark::lark_remove_source,
+            lark::lark_inbox,
+            lark::lark_item_details,
             link_preview::fetch_link_preview,
             fs::git_branches,
             fs::git_checkout,

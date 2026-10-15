@@ -6,7 +6,7 @@ export type NotificationProject = {
   id: string;
   name: string;
   detail: string;
-  kind: "repository" | "local" | "linear" | "jira";
+  kind: "repository" | "local" | "linear" | "jira" | "lark";
   paths: string[];
 };
 
@@ -74,7 +74,7 @@ export function loadNotificationProjects(): NotificationProject[] {
         typeof value.id === "string" &&
         typeof value.name === "string" &&
         typeof value.detail === "string" &&
-        ["repository", "local", "linear", "jira"].includes(value.kind) &&
+        ["repository", "local", "linear", "jira", "lark"].includes(value.kind) &&
         Array.isArray(value.paths) &&
         value.paths.every((path: unknown) => typeof path === "string"),
     );
@@ -138,6 +138,15 @@ type NotificationWorkItem = Pick<InboxItem, "provider" | "repo" | "url"> &
 export function inboxNotificationProject(
   item: NotificationWorkItem,
 ): NotificationProject {
+  if (item.provider === "lark") {
+    return {
+      id: `lark:${item.teamId || item.repo}`,
+      name: item.teamName || item.repo || "Lark source",
+      detail: "Lark",
+      kind: "lark",
+      paths: [],
+    };
+  }
   if (item.provider === "jira") {
     let site = "unknown";
     try {

@@ -40,11 +40,17 @@ import {
   type RecentProject,
 } from "../../projects/model/recents";
 import { recordInboxSelfActivity } from "./inboxSelfActivity";
+import {
+  larkConnected,
+  larkSourceRevision,
+  listLarkInbox,
+  type LarkSourceKind,
+} from "./lark";
 
 export type GithubTaskKind = "issue" | "pr";
 export type GithubPrAction =
   "merge" | "squash" | "rebase" | "draft" | "ready" | "close" | "reopen";
-export type InboxKind = GithubTaskKind | "linear" | "jira";
+export type InboxKind = GithubTaskKind | "linear" | "jira" | "lark";
 
 export type GithubLabel = {
   name: string;
@@ -73,7 +79,7 @@ export type GithubWorkItem = {
 };
 
 export type InboxProvider =
-  "github" | "linear" | "jira" | "gitlab" | "azuredevops";
+  "github" | "linear" | "jira" | "gitlab" | "azuredevops" | "lark";
 
 export type InboxItem = Omit<GithubWorkItem, "kind"> & {
   kind: InboxKind;
@@ -87,6 +93,8 @@ export type InboxItem = Omit<GithubWorkItem, "kind"> & {
   projectId?: string;
   projectName?: string;
   stateType?: string;
+  larkKind?: LarkSourceKind;
+  larkRecordId?: string;
   /** GitLab To-Do action that caused this item to need attention. */
   attentionReason?: string;
 };
@@ -242,7 +250,7 @@ export function inboxListCacheKey(
     .join("|");
   const teams = [...(query.linearHiddenTeamIds ?? [])].sort().join(",");
   const jiraProjects = [...(query.jiraHiddenProjectIds ?? [])].sort().join(",");
-  return `${query.assignedToMe ? 1 : 0}:${query.state}:${paths}:${teams}:${jiraProjects}`;
+  return `${query.assignedToMe ? 1 : 0}:${query.state}:${paths}:${teams}:${jiraProjects}:${larkSourceRevision()}`;
 }
 
 export function peekInboxList(
@@ -792,6 +800,17 @@ async function fetchInboxItems(
     errors.jira = inboxErrorMessage(error);
   }
 
+  let larkItems: InboxItem[] = [];
+  try {
+    if ((await larkConnected()).connected) {
+      const lark = await listLarkInbox();
+      larkItems = lark.items;
+      if (lark.errors.length) errors.lark = lark.errors.join("\n");
+    }
+  } catch (error) {
+    errors.lark = inboxErrorMessage(error);
+  }
+
   let gitlabItems: InboxItem[] = [];
   if ((await gitlabConnected()).connected) {
     const gitlab = await fetchRepositoryInboxItems(
@@ -822,6 +841,7 @@ async function fetchInboxItems(
         ...github.items,
         ...linearItems,
         ...jiraItems,
+        ...larkItems,
         ...gitlabItems,
         ...azureDevOpsItems,
       ],
@@ -1084,6 +1104,7 @@ export function inboxIdentityKey(item: {
   identifier?: string;
   id?: string;
 }): string {
+  if (item.provider === "lark") return item.id?.trim() || item.url;
   if (item.provider === "linear") {
     const identity = item.identifier?.trim() || item.id?.trim();
     if (identity) return identity.toLowerCase();
@@ -1220,6 +1241,7 @@ export function inboxItemRef(item: {
   number: number;
   identifier?: string;
 }): string {
+  if (item.provider === "lark") return item.identifier?.trim() || "Lark";
   if (item.provider === "linear" || item.provider === "jira") {
     return item.identifier?.trim() || `#${item.number}`;
   }
@@ -1227,6 +1249,13 @@ export function inboxItemRef(item: {
 }
 
 export function inboxStartDraft(item: InboxItem, body?: string): string {
+  if (item.provider === "lark") {
+    const label =
+      item.larkKind === "document"
+        ? "Use this Lark document as reference context:"
+        : "Work on this Lark Base record:";
+    return `${[label, "", item.title, item.url, "", body?.trim() ?? ""].join("\n").trimEnd()}\n`;
+  }
   if (item.provider === "linear" || item.provider === "jira") {
     const provider = item.provider === "jira" ? "Jira" : "Linear";
     const id = item.identifier?.trim() || `${provider} #${item.number}`;
@@ -1277,7 +1306,10 @@ export function inboxComposerCard(
   item: InboxItem,
   body?: string,
 ): InboxComposerCard {
-  const tracker = item.provider === "linear" || item.provider === "jira";
+  const tracker =
+    item.provider === "linear" ||
+    item.provider === "jira" ||
+    item.provider === "lark";
   return {
     provider: item.provider,
     kind: item.kind,

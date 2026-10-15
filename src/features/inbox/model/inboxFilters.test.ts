@@ -669,6 +669,7 @@ describe("inbox connection cache", () => {
 
   it("round-trips the last known connect state", () => {
     saveInboxConnections({
+      lark: true,
       github: true,
       linear: true,
       jira: true,
@@ -676,6 +677,7 @@ describe("inbox connection cache", () => {
       azuredevops: false,
     });
     expect(loadInboxConnections()).toEqual({
+      lark: true,
       github: true,
       linear: true,
       jira: true,
@@ -686,6 +688,7 @@ describe("inbox connection cache", () => {
 
   it("reads unknown when nothing is stored", () => {
     expect(loadInboxConnections()).toEqual({
+      lark: null,
       github: null,
       linear: null,
       jira: null,
@@ -697,6 +700,7 @@ describe("inbox connection cache", () => {
   it("reads unknown rather than trusting a malformed value", () => {
     localStorage.setItem(KEY, "not json");
     expect(loadInboxConnections()).toEqual({
+      lark: null,
       github: null,
       linear: null,
       jira: null,
@@ -705,6 +709,7 @@ describe("inbox connection cache", () => {
     });
     localStorage.setItem(KEY, '{"linear":"yes"}');
     expect(loadInboxConnections()).toEqual({
+      lark: null,
       github: null,
       linear: null,
       jira: null,

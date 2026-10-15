@@ -154,15 +154,21 @@ export function InboxFiltersMenu({
       onContextMenu={(event) => event.preventDefault()}
       className="overflow-y-auto overscroll-none p-1"
     >
-      <FilterItem
-        label={
-          source === "gitlab" || source === "azuredevops"
-            ? "Needs attention"
-            : "Assigned to me"
-        }
-        checked={filters.assignedToMe}
-        onClick={toggleAssigned}
-      />
+      {source !== "lark" ? (
+        <FilterItem
+          label={
+            source === "gitlab" || source === "azuredevops"
+              ? "Needs attention"
+              : "Assigned to me"
+          }
+          checked={filters.assignedToMe}
+          onClick={toggleAssigned}
+        />
+      ) : (
+        <p className="px-2 py-1 text-[11px] text-content/45">
+          Use a Base view to filter by owner.
+        </p>
+      )}
 
       <SectionLabel>Status</SectionLabel>
       <FilterItem

@@ -11,6 +11,7 @@ import {
   CircleX,
   Copy,
   ExternalLink,
+  File,
   GitCompare,
   GitMerge,
   GitPullRequest,
@@ -37,6 +38,16 @@ import {
 } from "react";
 import { InboxFiltersMenu, INBOX_FILTER_MENU_WIDTH } from "./InboxFiltersMenu";
 import { InboxConnectMenu } from "./InboxConnectMenu";
+import { LarkItemDetail } from "./LarkItemDetail";
+import { LarkSourceSelector } from "./LarkSourceSelector";
+import { clearInboxCache } from "../model/githubTasks";
+import {
+  LARK_CHANGE_EVENT,
+  larkConnected,
+  filterLarkItems,
+  type LarkSource,
+  type LarkSourceKind,
+} from "../model/lark";
 import { InboxProviderMark } from "./InboxProviderMark";
 import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
@@ -449,6 +460,16 @@ export function InboxView({
   const [targetItem, setTargetItem] = useState<InboxItem | null>(null);
   const [filters, setFilters] = useState(loadInboxFilters);
   const [connections, setConnections] = useState(loadInboxConnections);
+  const [larkSources, setLarkSources] = useState<LarkSource[]>([]);
+  const [larkKind, setLarkKind] = useState<LarkSourceKind>("base");
+  const [larkSourceId, setLarkSourceId] = useState("");
+  useEffect(() => {
+    setLarkSourceId((current) =>
+      larkSources.some((entry) => entry.id === current && entry.enabled)
+        ? current
+        : "",
+    );
+  }, [larkSources]);
   const [source, setSource] = useState(() =>
     resolveInboxSource(loadInboxSource(), connections),
   );
@@ -584,8 +605,10 @@ export function InboxView({
         jiraConnected(),
         gitlabConnected(),
         azureDevOpsConnected(),
-      ]).then(([github, linear, jira, gitlab, azuredevops]) => {
+        larkConnected(),
+      ]).then(([github, linear, jira, gitlab, azuredevops, lark]) => {
         if (cancelled || generation !== latest) return;
+        if (lark.status === "fulfilled") setLarkSources(lark.value.sources);
         setConnections((prev) => ({
           github:
             github.status === "fulfilled"
@@ -596,6 +619,7 @@ export function InboxView({
               ? linear.value.connected
               : prev.linear,
           jira: jira.status === "fulfilled" ? jira.value.connected : prev.jira,
+          lark: lark.status === "fulfilled" ? lark.value.connected : prev.lark,
           gitlab:
             gitlab.status === "fulfilled"
               ? gitlab.value.connected
@@ -612,12 +636,19 @@ export function InboxView({
     window.addEventListener(JIRA_CHANGE_EVENT, read);
     window.addEventListener(GITLAB_CHANGE_EVENT, read);
     window.addEventListener(AZUREDEVOPS_CHANGE_EVENT, read);
+    const onLarkChange = () => {
+      clearInboxCache();
+      setRefresh((value) => value + 1);
+      read();
+    };
+    window.addEventListener(LARK_CHANGE_EVENT, onLarkChange);
     return () => {
       cancelled = true;
       window.removeEventListener(LINEAR_CHANGE_EVENT, read);
       window.removeEventListener(JIRA_CHANGE_EVENT, read);
       window.removeEventListener(GITLAB_CHANGE_EVENT, read);
       window.removeEventListener(AZUREDEVOPS_CHANGE_EVENT, read);
+      window.removeEventListener(LARK_CHANGE_EVENT, onLarkChange);
     };
   }, []);
 
@@ -716,6 +747,7 @@ export function InboxView({
           jira: message,
           gitlab: message,
           azuredevops: message,
+          lark: message,
         });
       })
       .finally(() => {
@@ -756,9 +788,21 @@ export function InboxView({
 
   const visibleItems = useMemo(() => {
     if (!sourceAvailable) return [];
+    const scopedItems =
+      source === "lark"
+        ? filterLarkItems(items, larkKind, larkSourceId)
+        : items;
+    const scopedFilters =
+      source === "lark" && larkKind === "document"
+        ? {
+            ...activeFilters,
+            time: "all" as const,
+            status: { open: false, closed: false, draft: false, merged: false },
+          }
+        : activeFilters;
     const visible = applyInboxFilters(
-      items,
-      activeFilters,
+      scopedItems,
+      scopedFilters,
       searchInput,
       Date.now(),
       source,
@@ -773,6 +817,8 @@ export function InboxView({
     return [targeted, ...visible];
   }, [
     activeFilters,
+    larkKind,
+    larkSourceId,
     items,
     searchInput,
     source,
@@ -795,13 +841,19 @@ export function InboxView({
     () =>
       sourceAvailable
         ? items
-            .filter((item) => item.provider === source)
+            .filter(
+              (item) =>
+                item.provider === source &&
+                (source !== "lark" ||
+                  (item.larkKind === larkKind &&
+                    (!larkSourceId || item.teamId === larkSourceId))),
+            )
             .map((item) => ({
               key: inboxItemKey(item),
               updatedAt: item.updatedAt,
             }))
         : [],
-    [items, source, sourceAvailable],
+    [items, source, sourceAvailable, larkKind, larkSourceId],
   );
   const sourceHasUnseen = useMemo(
     () => sourceEntries.some(isInboxEntryUnseen),
@@ -947,6 +999,20 @@ export function InboxView({
           </button>
         ) : null}
       </div>
+      {source === "lark" ? (
+        <LarkSourceSelector
+          kind={larkKind}
+          sourceId={larkSourceId}
+          sources={larkSources}
+          onKind={(kind) => {
+            setLarkKind(kind);
+            setLarkSourceId("");
+            setFilterMenu(null);
+          }}
+          onSource={setLarkSourceId}
+          onManage={() => onOpenIntegrations("lark")}
+        />
+      ) : null}
       {noSourcesConnected ? null : (
         <div className="flex h-9 shrink-0 items-center gap-1 border-b border-stroke px-2">
           <div className="relative flex h-7 min-w-0 flex-1 items-center">
@@ -961,19 +1027,21 @@ export function InboxView({
               className="h-7 w-full rounded-md bg-transparent pl-7 pr-2 text-[12px] text-content outline-none placeholder:text-content/40"
             />
           </div>
-          <button
-            type="button"
-            title="Filter inbox"
-            aria-label="Filter inbox"
-            aria-expanded={!!filterMenu}
-            aria-haspopup="menu"
-            onClick={onFilterButtonClick}
-            className={`grid size-6 shrink-0 place-items-center rounded-md text-content/45 hover:bg-content/10 hover:text-content ${
-              filterMenu || filtersActive ? "bg-selection text-content" : ""
-            }`}
-          >
-            <ListFilter className="size-3" strokeWidth={1.75} />
-          </button>
+          {source !== "lark" || larkKind !== "document" ? (
+            <button
+              type="button"
+              title="Filter inbox"
+              aria-label="Filter inbox"
+              aria-expanded={!!filterMenu}
+              aria-haspopup="menu"
+              onClick={onFilterButtonClick}
+              className={`grid size-6 shrink-0 place-items-center rounded-md text-content/45 hover:bg-content/10 hover:text-content ${
+                filterMenu || filtersActive ? "bg-selection text-content" : ""
+              }`}
+            >
+              <ListFilter className="size-3" strokeWidth={1.75} />
+            </button>
+          ) : null}
           <button
             type="button"
             title="Mark all as read"
@@ -1012,6 +1080,16 @@ export function InboxView({
           {readStatusError}
         </p>
       ) : null}
+      {source === "lark" && sourceError && visibleItems.length > 0 ? (
+        <p
+          role="alert"
+          className="whitespace-pre-wrap break-words border-b border-stroke px-3 py-2 text-[11px] text-amber-500"
+        >
+          Some sources are incomplete. Successful sources remain available.
+          {"\n"}
+          {sourceError}
+        </p>
+      ) : null}
       <div
         ref={setListScrollRef}
         className="min-h-0 flex-1 overflow-y-auto overscroll-none"
@@ -1028,31 +1106,33 @@ export function InboxView({
           </div>
         ) : visibleItems.length === 0 ? (
           <p className="px-3 py-2 text-[12px] text-content/50">
-            {narrowedByUser
-              ? searchNarrowed
-                ? isTrackerSource(source)
-                  ? `No matching ${INBOX_SOURCE_LABELS[source]} issues`
-                  : source === "gitlab"
-                    ? "No matching issues or merge requests"
-                    : "No matching issues or pull requests"
+            {source === "lark"
+              ? `No matching ${larkKind === "base" ? "table records" : "documents"}. Check enabled sources and permissions in Settings.`
+              : narrowedByUser
+                ? searchNarrowed
+                  ? isTrackerSource(source)
+                    ? `No matching ${INBOX_SOURCE_LABELS[source]} issues`
+                    : source === "gitlab"
+                      ? "No matching issues or merge requests"
+                      : "No matching issues or pull requests"
+                  : isTrackerSource(source)
+                    ? `No ${INBOX_SOURCE_LABELS[source]} issues match these filters`
+                    : source === "gitlab" || source === "azuredevops"
+                      ? activeFilters.assignedToMe
+                        ? "Nothing needs your attention"
+                        : source === "gitlab"
+                          ? "No GitLab items match these filters"
+                          : "No ADO items match these filters"
+                      : "No issues or pull requests match these filters"
                 : isTrackerSource(source)
-                  ? `No ${INBOX_SOURCE_LABELS[source]} issues match these filters`
-                  : source === "gitlab" || source === "azuredevops"
-                    ? activeFilters.assignedToMe
-                      ? "Nothing needs your attention"
-                      : source === "gitlab"
-                        ? "No GitLab items match these filters"
-                        : "No ADO items match these filters"
-                    : "No issues or pull requests match these filters"
-              : isTrackerSource(source)
-                ? `No ${INBOX_SOURCE_LABELS[source]} issues`
-                : source === "gitlab"
-                  ? projects.length === 0
-                    ? "Open a project to fill the inbox"
-                    : "No matching issues or merge requests"
-                  : projects.length === 0
-                    ? "Open a project to fill the inbox"
-                    : "No matching issues or pull requests"}
+                  ? `No ${INBOX_SOURCE_LABELS[source]} issues`
+                  : source === "gitlab"
+                    ? projects.length === 0
+                      ? "Open a project to fill the inbox"
+                      : "No matching issues or merge requests"
+                    : projects.length === 0
+                      ? "Open a project to fill the inbox"
+                      : "No matching issues or pull requests"}
           </p>
         ) : (
           <ul className="flex flex-col gap-0.5 p-1.5">
@@ -1440,6 +1520,19 @@ function InboxDetailBody({
       </div>
     );
   }
+  if (item.provider === "lark") {
+    return (
+      <LarkItemDetail
+        key={inboxItemKey(item)}
+        item={item}
+        projects={projects}
+        cwd={cwd}
+        revision={revision}
+        onDiscuss={onDiscuss}
+        onStart={onStart}
+      />
+    );
+  }
   return (
     <InboxDetail
       key={inboxItemKey(item)}
@@ -1466,6 +1559,9 @@ type InboxStatusMark = {
 
 /** Status reads from the glyph first and the color second, so it survives color blindness. */
 export function inboxStatusMark(item: InboxItem): InboxStatusMark {
+  if (item.provider === "lark" && item.larkKind === "document") {
+    return { Icon: File, className: "text-content/50", label: "Document" };
+  }
   const label = inboxItemStatus(item);
   const pr = item.kind === "pr";
   if (label === "Draft") {
@@ -1519,14 +1615,21 @@ function InboxCard({
   useInboxSeenTick();
   const status = inboxStatusMark(item);
   const kindLabel =
-    item.kind === "pr"
-      ? item.provider === "gitlab"
-        ? "Merge request"
-        : "Pull request"
-      : "Issue";
+    item.provider === "lark"
+      ? item.larkKind === "document"
+        ? "Document"
+        : "Base record"
+      : item.kind === "pr"
+        ? item.provider === "gitlab"
+          ? "Merge request"
+          : "Pull request"
+        : "Issue";
   const time = formatRelativeTime(item.updatedAt);
   const name = projectName(item.projectPath);
-  const tracker = item.provider === "linear" || item.provider === "jira";
+  const tracker =
+    item.provider === "linear" ||
+    item.provider === "jira" ||
+    item.provider === "lark";
   const source = tracker ? item.teamName || item.repo : item.repo || name;
   const attentionLabel =
     item.provider === "gitlab" || item.provider === "azuredevops"

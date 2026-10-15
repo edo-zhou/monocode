@@ -481,6 +481,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "api key issues teams connect",
   },
   {
+    id: "lark",
+    section: "inbox",
+    label: "Lark / Feishu",
+    keywords: "lark feishu base bitable tables bugs tasks docs wiki multiple links app permissions 飞书 多维表格 文档",
+  },
+  {
     id: "show-archived",
     section: "archive",
     label: "Show archived in the sidebar",

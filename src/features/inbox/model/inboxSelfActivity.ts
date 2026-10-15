@@ -3,8 +3,8 @@ import { sameProjectPath } from "../../projects/model/recents";
 const MAX_PENDING_AGE_MS = 10 * 60_000;
 
 export type InboxSelfActivityTarget = {
-  provider: "github" | "gitlab" | "linear" | "jira" | "azuredevops";
-  kind?: "issue" | "pr" | "linear" | "jira";
+  provider: "github" | "gitlab" | "linear" | "jira" | "azuredevops" | "lark";
+  kind?: "issue" | "pr" | "linear" | "jira" | "lark";
   repo?: string;
   number?: number;
   id?: string;
@@ -12,7 +12,7 @@ export type InboxSelfActivityTarget = {
 };
 
 export type InboxSelfActivityItem = InboxSelfActivityTarget & {
-  kind: "issue" | "pr" | "linear" | "jira";
+  kind: "issue" | "pr" | "linear" | "jira" | "lark";
   number: number;
   projectPath: string;
 };

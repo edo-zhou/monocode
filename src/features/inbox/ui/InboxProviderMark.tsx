@@ -8,6 +8,14 @@ export function InboxProviderMark({
   provider: InboxProvider;
   className?: string;
 }) {
+  if (provider === "lark") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden className={className}>
+        <path d="M3 5h8l4 5H7L3 5Z" fill="#00B6C7" />
+        <path d="m7 10 5 9 9-14h-6l-5 8" fill="#3370FF" />
+      </svg>
+    );
+  }
   if (provider === "gitlab") {
     return (
       <svg viewBox="0 0 50 48" fill="none" aria-hidden className={className}>
